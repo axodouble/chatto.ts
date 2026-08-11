@@ -1,3 +1,4 @@
+import { describe, expect, it } from 'bun:test'
 import {
   MessageSchema,
   CreateMessageInputSchema,
@@ -35,6 +36,14 @@ describe('MessageSchema', () => {
     const { reactions, ...noReactions } = validMessage
     const msg = MessageSchema.parse(noReactions)
     expect(msg.reactions).toEqual([])
+  })
+
+  it('defaults omitted reaction hasReacted to false', () => {
+    const msg = MessageSchema.parse({
+      ...validMessage,
+      reactions: [{ emoji: '👍', count: 1 }],
+    })
+    expect(msg.reactions[0]?.hasReacted).toBe(false)
   })
 
   it('defaults attachments to empty array when absent', () => {

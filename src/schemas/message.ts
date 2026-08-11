@@ -4,7 +4,7 @@ import { MessageAttachmentSchema } from './asset'
 export const MessageReactionSchema = z.object({
   emoji: z.string(),
   count: z.number().int(),
-  hasReacted: z.boolean(),
+  hasReacted: z.boolean().default(false),
   previewUserIds: z.array(z.string()).default([]),
 })
 
