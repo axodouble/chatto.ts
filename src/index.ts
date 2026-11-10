@@ -166,3 +166,25 @@ export type {
   NotificationPolicyScope,
   ScopedNotificationPolicy,
 } from './schemas/notification'
+
+// Admin API (client.admin)
+export type { AdminManager } from './managers/admin'
+export { toPermissionDecision, toPermissionScope } from './managers/admin/permissions'
+export type * from './managers/admin/users'
+export type * from './schemas/admin/users'
+export type * from './managers/admin/permissions'
+export type * from './schemas/admin/permissions'
+export type * from './managers/admin/roles'
+export type * from './schemas/admin/roles'
+export type * from './managers/admin/invitation-codes'
+export type * from './schemas/admin/invitation-codes'
+export type * from './managers/admin/oauth-clients'
+export type * from './schemas/admin/oauth-clients'
+export type * from './managers/admin/diagnostics'
+export type * from './schemas/admin/diagnostics'
+export type * from './managers/admin/event-log'
+export type * from './schemas/admin/event-log'
+export type * from './managers/admin/room-layout'
+export type * from './schemas/admin/room-layout'
+export type * from './managers/admin/server'
+export type * from './schemas/admin/server'

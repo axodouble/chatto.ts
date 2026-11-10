@@ -18,6 +18,7 @@ import { PushNotificationManager } from './managers/push'
 import { BotManager } from './managers/bots'
 import { SearchManager } from './managers/search'
 import { NotificationManager } from './managers/notifications'
+import { AdminManager } from './managers/admin'
 import { UserCache, RoomCache } from './caches'
 
 export interface ClientContext {
@@ -46,6 +47,7 @@ export class ChattoContext implements ClientContext {
   readonly bots: BotManager
   readonly search: SearchManager
   readonly notifications: NotificationManager
+  readonly admin: AdminManager
   private readonly userCache: UserCache
   private readonly roomCache: RoomCache
 
@@ -66,6 +68,7 @@ export class ChattoContext implements ClientContext {
     this.bots = new BotManager(this)
     this.search = new SearchManager(this)
     this.notifications = new NotificationManager(this)
+    this.admin = new AdminManager(this)
     this.userCache = new UserCache(id => this.users.fetch(id))
     this.roomCache = new RoomCache(id => this.rooms.fetch(id))
   }

@@ -23,6 +23,7 @@ import type { PushNotificationManager } from './managers/push'
 import type { BotManager } from './managers/bots'
 import type { SearchManager } from './managers/search'
 import type { NotificationManager } from './managers/notifications'
+import type { AdminManager } from './managers/admin'
 import type { SessionTokens } from './auth/token-store'
 import type { ChattoClientOptions, ClientEventMap, ReconnectOptions, PresenceInput, CustomStatusInput, CustomStatus } from './types'
 import { ChattoAuthError } from './errors'
@@ -51,6 +52,8 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
   readonly search: SearchManager
   /** Notification occurrences and per-scope notification policies. */
   readonly notifications: NotificationManager
+  /** The admin API (users, permissions incl. bot grants, roles, layout, server...). Needs privileged mode. */
+  readonly admin: AdminManager
   private readonly rest: RestClient
   private readonly realtime: RealtimeConnection
   private readonly ctx: ChattoContext
@@ -122,6 +125,7 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
     this.bots = this.ctx.bots
     this.search = this.ctx.search
     this.notifications = this.ctx.notifications
+    this.admin = this.ctx.admin
     this.on('error', () => {})
     this.wireRealtime()
 
