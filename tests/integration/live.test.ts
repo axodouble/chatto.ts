@@ -1,17 +1,22 @@
 import { describe, it, expect } from 'bun:test'
-import { ChattoClient } from '../../src/index'
+import { ChattoClient, ChattoApiError } from '../../src/index'
 import type { Message, ReactionEvent, MessageDeleteEvent } from '../../src/index'
 
 const baseUrl = process.env.CHATTO_BASE_URL
 const login = process.env.CHATTO_LOGIN
 const password = process.env.CHATTO_PASSWORD
+const botToken = process.env.CHATTO_BOT_TOKEN
 const testRoom = process.env.CHATTO_TEST_ROOM
-const hasCreds = Boolean(baseUrl && login && password)
+const hasCreds = Boolean(baseUrl && botToken)
+// Custom status is human-only, so that one test still uses the deprecated password login.
+const hasHuman = Boolean(baseUrl && login && password)
 
 if (!hasCreds) {
   // eslint-disable-next-line no-console
-  console.log('[live] skipping — set CHATTO_BASE_URL/LOGIN/PASSWORD in .env to run')
+  console.log('[live] skipping — set CHATTO_BASE_URL and CHATTO_BOT_TOKEN in .env to run (bun run test:server:up does this)')
 }
+
+const botClient = () => new ChattoClient({ baseUrl: baseUrl!, token: botToken! })
 
 // Minimal emitter surface so the helper can (un)subscribe by event name.
 interface EmitterLike {
@@ -62,10 +67,13 @@ function expectRecentIso(value: string): void {
 }
 
 describe.if(hasCreds)('live integration', () => {
-  it('logs in and lists users', async () => {
-    const client = await ChattoClient.login({ baseUrl: baseUrl!, login: login!, password: password! })
+  it('authenticates with the bot key and lists users', async () => {
+    const client = botClient()
     await client.connect()
     try {
+      const self = (await client.viewer.fetch()).user.profile
+      expect(self?.bot).toBeDefined()
+
       const users = await client.users.list()
       const nonExistentUsers = await client.users.list({search: Date.now().toString()})
       expect(Array.isArray(users)).toBe(true)
@@ -77,7 +85,14 @@ describe.if(hasCreds)('live integration', () => {
     }
   })
 
-  it('sets presence and custom status, then reads them back and clears', async () => {
+  it('rejects an invalid bot key', async () => {
+    const client = new ChattoClient({ baseUrl: baseUrl!, token: 'cht_BK_nobody.definitely-not-valid' })
+    const err = await client.viewer.fetch().catch(e => e)
+    expect(err).toBeInstanceOf(ChattoApiError)
+    expect(err.code).toBe('unauthenticated')
+  })
+
+  it.if(hasHuman)('sets presence and custom status, then reads them back and clears (human account)', async () => {
     const client = await ChattoClient.login({ baseUrl: baseUrl!, login: login!, password: password! })
 
     // Resolve our own directory row so we can read back what the server stored.
@@ -128,12 +143,13 @@ describe.if(hasCreds)('live integration', () => {
   }, 30000)
 
   it.if(Boolean(testRoom))('sends and replies, with eager author/channel populated', async () => {
-    const client = await ChattoClient.login({ baseUrl: baseUrl!, login: login!, password: password! })
+    const client = botClient()
     const room = await client.rooms.fetch(testRoom!)
     const sent = await room.send('chatto.ts live test ✅')
     expect(sent.author.id).toBeString()
     expect(sent.author.displayName).toBeString()
-    expect(sent.author.login.toLowerCase()).toBe(login!.toLowerCase())
+    expect(sent.author.id).toBe((await client.viewer.fetch()).user.profile!.id)
+    expect(sent.author.isBot).toBe(true)
     expect(sent.channel.id).toBe(testRoom!)
     expectRecentIso(sent.createdAt)
     const reply = await sent.reply('reply via .reply()')
@@ -141,7 +157,7 @@ describe.if(hasCreds)('live integration', () => {
   }, 20000)
 
   it.if(Boolean(testRoom))('uploads a 256x256 image and attaches it to a message', async () => {
-    const client = await ChattoClient.login({ baseUrl: baseUrl!, login: login!, password: password! })
+    const client = botClient()
     const bytes = await Bun.file(new URL('../fixtures/test-image-256.png', import.meta.url)).bytes()
     const file = { data: bytes, filename: 'test-image-256.png', contentType: 'image/png' }
 
@@ -167,7 +183,7 @@ describe.if(hasCreds)('live integration', () => {
   }, 30000)
 
   it.if(Boolean(testRoom))('reads a thread created via .reply() with threads.fetchHistory', async () => {
-    const client = await ChattoClient.login({ baseUrl: baseUrl!, login: login!, password: password! })
+    const client = botClient()
     const room = await client.rooms.fetch(testRoom!)
 
     // .reply() roots the thread at the message replied to, so `root.id` is the thread key.
@@ -187,7 +203,7 @@ describe.if(hasCreds)('live integration', () => {
   }, 20000)
 
   it.if(Boolean(testRoom))('round-trips every realtime event over a message lifecycle', async () => {
-    const client = await ChattoClient.login({ baseUrl: baseUrl!, login: login!, password: password! })
+    const client = botClient()
     const errors: Error[] = []
     client.on('error', err => errors.push(err))
 

@@ -36,7 +36,9 @@
   "scripts": {
     "build": "tsc",
     "test": "bun test",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p examples",
+    "example:ping": "bun examples/ping-bot.ts",
+    "example:commands": "bun examples/command-bot/main.ts",
     "prepublishOnly": "tsc",
     "gen:realtime": "bun scripts/gen-realtime.ts",
     "test:server:up": "docker compose -f docker/compose.yml up -d --wait && ./docker/seed.sh",

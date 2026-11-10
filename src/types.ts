@@ -64,6 +64,7 @@ export interface ReconnectOptions {
   maxAttempts?: number
 }
 
+/** @deprecated Only used by password sessions, which are unsupported. */
 export interface RefreshOptions {
   /** Optional opt-in periodic re-login interval, in ms. Default: disabled. */
   intervalMs?: number
@@ -115,15 +116,25 @@ export interface RealtimeOptions {
 
 export interface ChattoClientOptions {
   baseUrl: string
-  /** Bearer token: a session access token or a bot API key. */
+  /** Bot API key (`cht_BK_…`), sent as `Authorization: Bearer <token>`. Keys never expire. */
   token: string
-  /** Rotating refresh token from a password login; enables silent renewal. */
+  /**
+   * Rotating refresh token from a password login; enables silent renewal.
+   * @deprecated Password authentication is unsupported. Use a bot API key as `token`.
+   */
   refreshToken?: string
-  /** When `token` expires (Date or epoch ms); enables proactive renewal. */
+  /**
+   * When `token` expires (Date or epoch ms); enables proactive renewal.
+   * @deprecated Only password sessions expire. Password authentication is unsupported. Use a bot API key as `token`.
+   */
   tokenExpiresAt?: Date | number
-  /** Retained password credentials; enables automatic re-login on auth failure. */
+  /**
+   * Retained password credentials; enables automatic re-login on auth failure.
+   * @deprecated Password authentication is unsupported. Use a bot API key as `token`.
+   */
   credentials?: { login: string; password: string }
   reconnect?: ReconnectOptions
+  /** @deprecated Only used by password sessions. Password authentication is unsupported. Use a bot API key as `token`. */
   refresh?: RefreshOptions
   presence?: PresenceOptions
   realtime?: RealtimeOptions
@@ -149,6 +160,7 @@ export interface ClientEventMap extends RealtimeEventMap {
   /**
    * Emitted after the session was renewed. Persist `session.refreshToken`:
    * refresh tokens rotate and the previous one is no longer valid.
+   * @deprecated Only fires for password sessions, which are unsupported.
    */
   tokenRefresh: [session: SessionTokens]
   /** Emitted before each reconnect attempt. */

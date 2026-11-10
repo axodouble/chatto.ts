@@ -25,6 +25,7 @@ import type { SearchManager } from './managers/search'
 import type { NotificationManager } from './managers/notifications'
 import type { AdminManager } from './managers/admin'
 import type { SessionTokens } from './auth/token-store'
+import { warnPasswordAuthDeprecated } from './auth/deprecation'
 import type { ChattoClientOptions, ClientEventMap, ReconnectOptions, PresenceInput, CustomStatusInput, CustomStatus } from './types'
 import { ChattoAuthError } from './errors'
 import { toPresenceStatus } from './account/presence'
@@ -78,6 +79,7 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
     ) => RealtimeConnection,
   ) {
     super()
+    if (options.credentials != null || options.refreshToken != null) warnPasswordAuthDeprecated()
     const wsUrl = options.baseUrl.replace(/^https?/, m => (m === 'https' ? 'wss' : 'ws')) + '/api/realtime'
     this.baseUrl = options.baseUrl
     this.store = new TokenStore(options.baseUrl, options.token, options.credentials, undefined, {
@@ -143,6 +145,10 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
    * retained only as a fallback when `retainCredentials` is true (the default,
    * for compatibility). Pass extra client options (reconnect, realtime, ...)
    * through `options`.
+   *
+   * @deprecated Password authentication is unsupported and may stop working in
+   * any release; bot accounts cannot use it. Create a bot under Server Admin →
+   * Bots and use `new ChattoClient({ baseUrl, token: apiKey })`.
    */
   static async login(
     options: { baseUrl: string; login: string; password: string; retainCredentials?: boolean } &
@@ -159,7 +165,10 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
     })
   }
 
-  /** The current bearer session (token, refresh token, expiry), e.g. to persist it. */
+  /**
+   * The current bearer session (token, refresh token, expiry), e.g. to persist it.
+   * @deprecated Only meaningful for password sessions, which are unsupported.
+   */
   get session(): SessionTokens {
     return this.store.getSession()
   }
@@ -178,6 +187,9 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
   /**
    * Revoke this session on the server (access and refresh token) and disconnect.
    * Bot API keys are not revoked by logout; manage them with the bots API.
+   *
+   * @deprecated Only applies to password sessions, which are unsupported. To end
+   * a bot's access, revoke its key with `client.bots.revokeApiKey()`.
    */
   async logout(): Promise<void> {
     const session = this.store.getSession()
@@ -197,7 +209,10 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
     return this.rest.call(service, method, input, schema)
   }
 
-  /** Renew the access token now (refresh token first, then password fallback). */
+  /**
+   * Renew the access token now (refresh token first, then password fallback).
+   * @deprecated Only applies to password sessions; bot API keys never expire.
+   */
   async refreshToken(): Promise<void> {
     await this.store.refresh()
     this.emit('tokenRefresh', this.store.getSession())
@@ -317,7 +332,7 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
       }
       if (reason.kind === 'auth' && !this.store.canRefresh()) {
         this.teardownPresence()
-        this.emit('error', new ChattoAuthError('no_credentials', 'Realtime auth failed and no credentials to refresh'))
+        this.emit('error', new ChattoAuthError('no_credentials', 'Realtime auth failed: the token is invalid or was revoked'))
         this.emit('disconnect')
         return
       }

@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { ChattoApiError, ChattoAuthError, ChattoParseError } from '../errors'
+import { warnPasswordAuthDeprecated } from './deprecation'
 
 const LoginResponseSchema = z.object({
   success: z.boolean(),
@@ -17,9 +18,13 @@ const LoginResponseSchema = z.object({
   }),
 })
 
+/** @deprecated Password authentication is unsupported. Use a bot API key. */
 export type LoginResult = z.infer<typeof LoginResponseSchema>
 
-/** A renewed bearer session. Store the new `refreshToken`: the old one is now spent. */
+/**
+ * A renewed bearer session. Store the new `refreshToken`: the old one is now spent.
+ * @deprecated Password sessions are unsupported. Bot API keys never need renewal.
+ */
 export interface RefreshedSession {
   token: string
   refreshToken: string
@@ -36,12 +41,17 @@ const RefreshResponseSchema = z.object({
   refresh_token_expires_in: z.number(),
 })
 
-/** Sign in with a login (username or email) and password via `POST /auth/login`. */
+/**
+ * Sign in with a login (username or email) and password via `POST /auth/login`.
+ *
+ * @deprecated Password authentication is unsupported; bot accounts cannot use it. Create a bot under Server Admin → Bots and pass its API key as `new ChattoClient({ baseUrl, token })`.
+ */
 export async function loginWithPassword(
   baseUrl: string,
   login: string,
   password: string,
 ): Promise<LoginResult> {
+  warnPasswordAuthDeprecated()
   const res = await fetch(`${baseUrl}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -68,6 +78,8 @@ export async function loginWithPassword(
 /**
  * Rotate a bearer session with the OAuth `refresh_token` grant (`POST /oauth/token`).
  * Each refresh token is single-use: reusing a spent one revokes the session.
+ *
+ * @deprecated Refresh tokens only come from password sign-in, which is unsupported.
  */
 export async function refreshSession(baseUrl: string, refreshToken: string): Promise<RefreshedSession> {
   const res = await fetch(`${baseUrl}/oauth/token`, {
@@ -94,6 +106,9 @@ export async function refreshSession(baseUrl: string, refreshToken: string): Pro
 /**
  * Revoke a bearer session via `POST /auth/logout`. Revokes the access token and,
  * when given, the refresh token; the server then ends the user's realtime sessions.
+ *
+ * @deprecated Only applies to password sessions, which are unsupported. Revoke a
+ * bot API key with `client.bots.revokeApiKey()` instead.
  */
 export async function logout(baseUrl: string, token: string, refreshToken?: string): Promise<void> {
   const res = await fetch(`${baseUrl}/auth/logout`, {

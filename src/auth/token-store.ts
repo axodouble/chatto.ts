@@ -14,7 +14,10 @@ export type LoginFn = (
 
 export type RefreshFn = (baseUrl: string, refreshToken: string) => Promise<RefreshedSession>
 
-/** Current bearer session, as reported by `client.on('tokenRefresh', session => ...)`. */
+/**
+ * Current bearer session, as reported by `client.on('tokenRefresh', session => ...)`.
+ * @deprecated Password sessions are unsupported. Bot API keys never need renewal.
+ */
 export interface SessionTokens {
   token: string
   refreshToken?: string
