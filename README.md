@@ -7,7 +7,7 @@
 [![TypeScript](https://img.shields.io/badge/TypeScript-3178c6&logo=typescript&logoColor=white?style=flat)](https://www.typescriptlang.org/)
 
 A Chatto Typescript library to interface with a Chatto instance.
-Tested against `v0.4.20` of Chatto.
+Tested against `v0.5.0` of Chatto. Chatto `0.4.x` servers are not supported by this version; use `chatto.ts@0.4` for those.
 
 If you are looking for a `Java` SDK, [feel free to use this SDK made by a fellow developer](https://github.com/freakynit/chatto-java-sdk)!
 
@@ -21,11 +21,6 @@ The documentation itself is bound to change.
 
 You can install this easily as an NPM package, just by using either bun or npm to install it.
 Use `bun i chatto.ts` or `npm i chatto.ts`.
-
-### ⚠️ CURRENTLY ONLY PASSWORD AUTHENTICATION WORKS ⚠️
-
-This is because https://github.com/chattocorp/chatto/issues/266 is not yet implemented.
-Once that is the case I intend to change it to allow for dedicated bot API tokens using a bot account.
 
 A simple example application:
 
@@ -52,6 +47,20 @@ client.on('messageCreate', async message=>{
 client.connect()
 ```
 
+### Bot accounts
+
+Chatto 0.5 has [bot accounts](https://docs.chatto.run/guides/integrations/bot-accounts/). Pass the bot's API key as the token; keys do not expire and are never refreshed:
+
+```typescript
+const bot = new ChattoClient({ baseUrl: "https://chat.example.com", token: process.env.CHATTO_BOT_KEY! })
+bot.on('messageCreate', async message => {
+    if (message.channel.isDM && message.content === '/ping') await message.reply('pong')
+})
+await bot.connect()
+```
+
+A new bot has no permissions. An admin grants them per scope (for example `message.read` and `message.post` for direct messages), in the bot's **Permissions** page or through `client.admin.permissions` (see [Administration](#administration)). Bots can also be created and managed from code with `client.bots` (API keys, incoming and outbound webhooks).
+
 ### Uploading images & media
 
 Attach files directly when sending or replying — they are uploaded to the room
@@ -60,10 +69,10 @@ and attached automatically (at most 10 attachments per message):
 ```typescript
 const bytes = await Bun.file("cat.png").bytes() // any Uint8Array / ArrayBuffer
 
-// Attach inline when sending
+// Attach inline when sending, optionally with an accessibility description
 await client.messages.send(roomId, {
     content: "look at this",
-    files: [{ data: bytes, filename: "cat.png", contentType: "image/png" }],
+    files: [{ data: bytes, filename: "cat.png", contentType: "image/png", description: "A cat on a keyboard" }],
 })
 
 // Or reply with a file
@@ -88,15 +97,79 @@ client.on('messageCreate', message => {
 })
 ```
 
+### Messages, reactions, threads and pins
+
+Every send gets an idempotency key, so retrying a failed send never posts twice.
+
+```typescript
+// Start a thread together with its first message
+const root = await room.send({ content: "Release checklist", createThread: true })
+await root.reply("1. Bump the version")
+await root.follow()
+
+// Reactions take a Chatto reaction name or a Unicode emoji
+await root.react('👍')        // sent as "thumbsup"
+await root.react('wave::skin-tone-3')
+
+await root.pin()
+const pins = await room.listPins()
+await room.sendTyping()
+await room.markAsRead()
+```
+
+Other room features live on `Room` and `client.rooms`: members, notices, read state, suspensions (`removeUser`/`liftSuspension`), room groups, invitations (`room.invite(userId)`, `client.rooms.invitations`), and timelines including joins, leaves and calls (`room.fetchEvents()`).
+
+### Realtime events
+
+The client uses Chatto's realtime protocol v4. Besides the convenience events (`messageCreate`, `messageUpdate`, `messageDelete`, `reactionAdd`, `reactionRemove`), every server event is emitted under its own name with a typed payload and its envelope metadata:
+
+```typescript
+client.on('userTyping', (event, meta) => console.log(`${meta.actorId} is typing in ${event.roomId}`))
+client.on('presenceChanged', (event, meta) => console.log(meta.actorId, event.status))
+client.on('roomInvitationCreated', event => console.log('invited to', event.roomId))
+client.on('raw', event => console.log(event.event)) // every event
+```
+
+After a short disconnect the client resumes the stream from its last position, so no events are missed. `caughtUp` reports how the stream recovered: anything other than `REALTIME_RECOVERY_RESUMED` means events may have been missed while offline.
+
+```typescript
+client.on('caughtUp', ({ recovery }) => {
+    if (recovery !== 'REALTIME_RECOVERY_RESUMED') console.log('events may have been missed; refetch what you need')
+})
+
+// Receive the visible rooms, room groups, users and active calls on connect
+const client = new ChattoClient({ baseUrl, token, realtime: { initialState: 'snapshot' } })
+client.on('snapshot', snapshot => console.log(snapshot.rooms.length, 'rooms'))
+```
+
+### More APIs
+
+| Property | What it covers |
+| --- | --- |
+| `client.account` | presence preference, custom status, password, verified emails, settings, linked identities, account deletion |
+| `client.users` | directory search and paging, lookup by login, profile and avatar updates |
+| `client.viewer` | the signed-in user and privileged mode |
+| `client.rooms` / `client.threads` / `client.messages` | everything described above |
+| `client.bots` | bots, API keys, incoming and outbound webhooks |
+| `client.search` | full-text message search (`search()`, `searchAll()`) |
+| `client.notifications` | notification feed, unread counts, per-room notification policies |
+| `client.roles`, `client.permissions` | roles and effective permissions |
+| `client.server` | server profile, message of the day, upload limits |
+| `client.voice` | active calls, joining and call tokens |
+| `client.push` | Web Push subscriptions |
+| `client.admin` | the admin API (see below) |
+
+Anything else can be called directly with `client.rpc(service, method, input)`.
+
 ### Setting your status
 
-Presence is transient — the client refreshes it automatically every 30s while set.
+Your status is saved on the server and shown on every device. While the client is connected it sends a heartbeat every 30s, which keeps the account shown with its status; without it the account shows as offline after a minute.
 
 ```typescript
 // Presence: 'online' | 'away' | 'dnd' | 'offline' (aliases: 'idle', 'invisible')
 await client.setStatus('online')
 
-// Appear offline: stops refreshing; the server record expires via TTL.
+// Appear offline (also hides typing indicators)
 await client.setStatus('offline')
 
 // Custom status (emoji + text, optional expiry)
@@ -104,32 +177,33 @@ await client.setCustomStatus({ emoji: '🎧', text: 'listening', expiresAt: new 
 await client.clearCustomStatus()
 ```
 
-Disable auto-refresh (one-shot presence updates you manage yourself):
+Disable the heartbeat if the account should never be shown as online by this client:
 
 ```typescript
 const client = new ChattoClient({ baseUrl, token, presence: { autoRefresh: false } })
 ```
 
-### Auto-refresh & reconnect
+### Sessions & reconnect
 
-The client automatically handles token expiration and realtime disconnects. Enable automatic re-login on auth failure by passing credentials:
-
-```typescript
-const client = new ChattoClient({
-    baseUrl: "https://chat.example.com",
-    token: initialToken,
-    credentials: { login: "username", password: "password" }
-})
-```
-
-Alternatively, use `ChattoClient.login()` — it retains credentials automatically:
+`ChattoClient.login()` signs in with a password and keeps the session alive with Chatto's rotating refresh token: the client renews the token a minute before it expires and whenever the server rejects it. By default it also keeps the password as a fallback; pass `retainCredentials: false` to keep only the refresh token.
 
 ```typescript
 const client = await ChattoClient.login({
     baseUrl: "https://chat.example.com",
     login: "username",
-    password: "password"
+    password: "password",
+    retainCredentials: false
 })
+
+// Refresh tokens rotate: persist the latest session if you want to resume it later
+client.on('tokenRefresh', session => save(session.refreshToken))
+
+// Resume a saved session later
+const resumed = new ChattoClient({ baseUrl: "https://chat.example.com", token: "", refreshToken: saved })
+await resumed.refreshToken()
+
+// Sign out (revokes the session on the server)
+await client.logout()
 ```
 
 **Realtime reconnection:** If the websocket drops (e.g. transient network failure), the client reconnects with exponential backoff + jitter. Configure via `reconnect` options:
@@ -138,7 +212,6 @@ const client = await ChattoClient.login({
 const client = new ChattoClient({
     baseUrl: "https://chat.example.com",
     token: initialToken,
-    credentials: { login: "username", password: "password" },
     reconnect: {
         baseDelayMs: 1000,     // initial delay (default)
         maxDelayMs: 30000,     // cap (default)
@@ -146,26 +219,27 @@ const client = new ChattoClient({
         maxAttempts: Infinity  // attempts before giving up (default)
     }
 })
-```
 
-**Token refresh:** Optionally refresh the token on an interval (e.g. to refresh every 5 minutes):
-
-```typescript
-const client = new ChattoClient({
-    baseUrl: "https://chat.example.com",
-    token: initialToken,
-    credentials: { login: "username", password: "password" },
-    refresh: { intervalMs: 5 * 60 * 1000 } // refresh every 5 minutes
-})
-```
-
-Listen for `tokenRefresh` (after successful re-login) and `reconnecting` (before each reconnect attempt):
-
-```typescript
-client.on('tokenRefresh', () => console.log('Token refreshed'))
 client.on('reconnecting', (attempt, delayMs) => {
     console.log(`Reconnecting (attempt ${attempt}) in ${delayMs}ms`)
 })
+```
+
+### Administration
+
+`client.admin` wraps the admin API: members, roles, permissions, invitation codes, OAuth clients, the event log, diagnostics, room layout and server configuration. Most administrative permissions are only active in privileged mode, which lasts 15 minutes:
+
+```typescript
+await client.viewer.activatePrivilegedMode()
+
+// Create a bot and let it read and post in direct messages
+const { bot, apiKey } = await client.bots.create({ login: "helper", displayName: "Helper" })
+await client.admin.permissions.setUserPermission(bot.user!.id, ['message.read', 'message.post'], 'allow', 'dm')
+
+// Invite-only registration
+const code = await client.admin.invitationCodes.create({ note: "for Sam" })
+
+await client.viewer.deactivatePrivilegedMode()
 ```
 
 ## Running the live tests locally
