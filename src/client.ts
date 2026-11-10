@@ -22,7 +22,7 @@ import type { PushNotificationManager } from './managers/push'
 import type { SessionTokens } from './auth/token-store'
 import type { ChattoClientOptions, ClientEventMap, ReconnectOptions, PresenceInput, CustomStatusInput, CustomStatus } from './types'
 import { ChattoAuthError } from './errors'
-import { normalizePresence } from './account/presence'
+import { toPresenceStatus } from './account/presence'
 
 
 export class ChattoClient extends EventEmitter<ClientEventMap> {
@@ -54,7 +54,6 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
   private closedByUser = false
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private presenceTimer: ReturnType<typeof setInterval> | null = null
-  private currentPresence: string | null = null
   private readonly presenceOpts: { autoRefresh: boolean; intervalMs: number }
 
   constructor(
@@ -155,6 +154,7 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
     if (remaining != null && remaining < 60_000 && this.store.canRefresh()) await this.refreshToken()
     await this.realtime.connect()
     this.scheduleProactiveRefresh()
+    if (this.presenceOpts.autoRefresh) this.startPresenceHeartbeat()
     this.emit('ready')
   }
 
@@ -231,21 +231,16 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
     this.emit('disconnect')
   }
 
+  /**
+   * Save the account's presence choice (Chatto 0.5 presence preference). It is
+   * shown on every device and survives disconnects: `'dnd'` suppresses alerts
+   * and `'offline'`/`'invisible'` make the account appear offline. While the
+   * client is connected (or after this call), a liveness heartbeat keeps an
+   * Online/Away/DND choice visible; without one it shows as offline within 60s.
+   */
   async setStatus(status: PresenceInput): Promise<PresenceInput> {
-    const normalized = normalizePresence(status)
-    if (normalized === 'OFFLINE') {
-      this.teardownPresence()
-      return status
-    }
-    this.currentPresence = normalized
-    await this.ctx.account.updatePresence(normalized, true)
-    // Re-check after the await: a disconnect() or terminal close may have torn
-    // presence down (and reset currentPresence to null) while we were waiting
-    // on the network. Starting a fresh heartbeat here would leak an interval
-    // that never gets cleared.
-    if (this.presenceOpts.autoRefresh && this.currentPresence === normalized) {
-      this.startPresenceHeartbeat()
-    }
+    await this.ctx.account.setPresencePreference(toPresenceStatus(status))
+    if (this.presenceOpts.autoRefresh && !this.closedByUser) this.startPresenceHeartbeat()
     return status
   }
 
@@ -257,30 +252,28 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
     await this.ctx.account.deleteCustomStatus()
   }
 
+  // RefreshPresence reports liveness: Chatto shows the saved choice only while
+  // a heartbeat arrived within the last 60 seconds.
   private startPresenceHeartbeat(): void {
-    this.stopPresenceHeartbeat()
-    this.presenceTimer = setInterval(() => {
-      const status = this.currentPresence
-      if (status == null) return
-      this.ctx.account.updatePresence(status, true).catch(err => {
+    if (this.presenceTimer != null) return
+    const beat = () => {
+      this.ctx.account.refreshPresence().catch(err => {
         this.emit('error', err instanceof Error ? err : new Error(String(err)))
       })
-    }, this.presenceOpts.intervalMs)
-  }
-
-  private stopPresenceHeartbeat(): void {
-    if (this.presenceTimer != null) {
-      clearInterval(this.presenceTimer)
-      this.presenceTimer = null
     }
+    beat()
+    this.presenceTimer = setInterval(beat, this.presenceOpts.intervalMs)
+    this.presenceTimer.unref?.()
   }
 
   // Called from every terminal shutdown path (user disconnect(), clean/fatal
   // close, auth close with no refreshable credentials, reconnect give-up)
   // so the heartbeat can never keep firing after the client has given up.
   private teardownPresence(): void {
-    this.stopPresenceHeartbeat()
-    this.currentPresence = null
+    if (this.presenceTimer != null) {
+      clearInterval(this.presenceTimer)
+      this.presenceTimer = null
+    }
   }
 
   private wireRealtime(): void {

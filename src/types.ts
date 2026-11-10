@@ -87,9 +87,13 @@ export interface CustomStatus {
   expiresAt?: string
 }
 
-/** Presence auto-refresh behavior. */
+/** Presence liveness behavior. */
 export interface PresenceOptions {
-  /** Auto-refresh presence after setStatus. Default true. */
+  /**
+   * Send a RefreshPresence heartbeat while connected and after setStatus, so
+   * the account appears with its saved choice (Online when none is saved).
+   * Disable for clients that should never show the account as online. Default true.
+   */
   autoRefresh?: boolean
   /** Heartbeat interval in ms. Default 30000. */
   intervalMs?: number
