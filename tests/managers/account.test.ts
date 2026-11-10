@@ -7,13 +7,13 @@ function makeRestMock(returnValue: unknown) {
 
 describe('AccountManager', () => {
   describe('.updatePresence()', () => {
-    it('posts UpdatePresence and returns the accepted status', async () => {
+    it('posts SetPresence and returns the accepted status', async () => {
       const rest = makeRestMock({ status: 'PRESENCE_STATUS_ONLINE' })
       const manager = new AccountManager({ rest } as any)
       const status = await manager.updatePresence('PRESENCE_STATUS_ONLINE', true)
       expect(rest.post).toHaveBeenCalledWith(
         'chatto.api.v1.MyAccountService',
-        'UpdatePresence',
+        'SetPresence',
         { status: 'PRESENCE_STATUS_ONLINE', userSelected: true },
         expect.anything(),
       )
@@ -22,7 +22,7 @@ describe('AccountManager', () => {
   })
 
   describe('.updateCustomStatus()', () => {
-    it('posts UpdateCustomStatus with serialized expiry', async () => {
+    it('posts SetCustomStatus with serialized expiry', async () => {
       const rest = makeRestMock({ status: { emoji: '🎧', text: 'listening' } })
       const manager = new AccountManager({ rest } as any)
       const result = await manager.updateCustomStatus({
@@ -32,7 +32,7 @@ describe('AccountManager', () => {
       })
       expect(rest.post).toHaveBeenCalledWith(
         'chatto.api.v1.MyAccountService',
-        'UpdateCustomStatus',
+        'SetCustomStatus',
         { emoji: '🎧', text: 'listening', expiresAt: '2026-07-15T12:00:00.000Z' },
         expect.anything(),
       )
@@ -45,7 +45,7 @@ describe('AccountManager', () => {
       await manager.updateCustomStatus({ emoji: '🎧', text: 'hi' })
       expect(rest.post).toHaveBeenCalledWith(
         'chatto.api.v1.MyAccountService',
-        'UpdateCustomStatus',
+        'SetCustomStatus',
         { emoji: '🎧', text: 'hi', expiresAt: undefined },
         expect.anything(),
       )

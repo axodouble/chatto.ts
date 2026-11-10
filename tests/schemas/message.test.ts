@@ -97,8 +97,8 @@ describe('MessageResponseSchema', () => {
 })
 
 describe('DeleteMessageResponseSchema', () => {
-  it('parses deleted: true', () => {
-    expect(DeleteMessageResponseSchema.parse({ deleted: true }).deleted).toBe(true)
+  it('parses the empty Chatto 0.5 response', () => {
+    expect(DeleteMessageResponseSchema.parse({})).toEqual({})
   })
 })
 

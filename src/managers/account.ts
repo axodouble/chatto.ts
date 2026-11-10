@@ -2,8 +2,8 @@ import type { ClientContext } from '../context'
 import type { CustomStatus, CustomStatusInput } from '../types'
 import { serializeExpiresAt } from '../account/presence'
 import {
-  UpdatePresenceResponseSchema,
-  UpdateCustomStatusResponseSchema,
+  SetPresenceResponseSchema,
+  SetCustomStatusResponseSchema,
   DeleteCustomStatusResponseSchema,
 } from '../schemas/user'
 
@@ -13,9 +13,9 @@ export class AccountManager {
   async updatePresence(status: string, userSelected: boolean): Promise<string> {
     const res = await this.ctx.rest.post(
       'chatto.api.v1.MyAccountService',
-      'UpdatePresence',
+      'SetPresence',
       { status, userSelected },
-      UpdatePresenceResponseSchema,
+      SetPresenceResponseSchema,
     )
     return res.status
   }
@@ -23,9 +23,9 @@ export class AccountManager {
   async updateCustomStatus(input: CustomStatusInput): Promise<CustomStatus> {
     const res = await this.ctx.rest.post(
       'chatto.api.v1.MyAccountService',
-      'UpdateCustomStatus',
+      'SetCustomStatus',
       { emoji: input.emoji, text: input.text, expiresAt: serializeExpiresAt(input.expiresAt) },
-      UpdateCustomStatusResponseSchema,
+      SetCustomStatusResponseSchema,
     )
     return res.status
   }

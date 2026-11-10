@@ -5,7 +5,7 @@ import type { MessagePayload } from '../builders/payload'
 import { resolveMessagePayload } from '../builders/payload'
 import { prepareCreateInput } from '../builders/create-input'
 import { MessageResponseSchema } from '../schemas/message'
-import { GetRoomEventsResponseSchema } from '../schemas/room'
+import { GetRoomEventsResponseSchema, RoomSchema } from '../schemas/room'
 
 export class Room {
   readonly id: string
@@ -23,7 +23,7 @@ export class Room {
   }
 
   static partial(id: string, ctx: ClientContext): Room {
-    return new Room({ id, name: id, kind: '', archived: false } as RoomData, ctx)
+    return new Room(RoomSchema.parse({ id, name: id }), ctx)
   }
 
   async send(payload: MessagePayload): Promise<Message> {
@@ -44,14 +44,16 @@ export class Room {
     return this.ctx.hydrateMessage(res.message)
   }
 
-  async fetchHistory(opts: { limit?: number; before?: string } = {}): Promise<Message[]> {
+  async fetchHistory(opts: { limit?: number; before?: string; after?: string } = {}): Promise<Message[]> {
     const res = await this.ctx.rest.post(
       'chatto.api.v1.RoomService',
       'GetRoomEvents',
       {
         roomId: this.id,
         limit: opts.limit,
-        cursor: opts.before != null ? { before: opts.before } : undefined,
+        // `before`/`after` form a oneof, which proto3 JSON encodes flat.
+        before: opts.before,
+        after: opts.before == null ? opts.after : undefined,
       },
       GetRoomEventsResponseSchema,
     )

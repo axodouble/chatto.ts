@@ -278,7 +278,7 @@ describe('ChattoClient', () => {
       return (client as any).ctx.account as AccountManager
     }
 
-    it('setStatus sends UpdatePresence with userSelected=true', async () => {
+    it('setStatus sends SetPresence with userSelected=true', async () => {
       const client = makeClient(makeMockRt())
       const account = accountOf(client)
       const spy = spyOn(account, 'updatePresence').mockResolvedValue('PRESENCE_STATUS_ONLINE')

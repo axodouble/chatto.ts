@@ -37,6 +37,7 @@ export class User {
         avatarUrl: undefined,
         presenceStatus: 'PRESENCE_STATUS_UNSPECIFIED',
         customStatus: undefined,
+        deactivated: false,
       },
       roles: [],
       createdAt: undefined,

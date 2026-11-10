@@ -110,7 +110,7 @@ describe('Room', () => {
       expect(ctx.rest.post).toHaveBeenCalledWith(
         'chatto.api.v1.RoomService',
         'GetRoomEvents',
-        expect.objectContaining({ cursor: { before: 'cursor_abc' } }),
+        expect.objectContaining({ before: 'cursor_abc' }),
         expect.anything(),
       )
     })
