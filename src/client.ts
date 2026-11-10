@@ -19,6 +19,9 @@ import type { RoleManager } from './managers/roles'
 import type { ServerManager } from './managers/server'
 import type { VoiceCallManager } from './managers/voice'
 import type { PushNotificationManager } from './managers/push'
+import type { BotManager } from './managers/bots'
+import type { SearchManager } from './managers/search'
+import type { NotificationManager } from './managers/notifications'
 import type { SessionTokens } from './auth/token-store'
 import type { ChattoClientOptions, ClientEventMap, ReconnectOptions, PresenceInput, CustomStatusInput, CustomStatus } from './types'
 import { ChattoAuthError } from './errors'
@@ -41,6 +44,12 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
   readonly server: ServerManager
   readonly voice: VoiceCallManager
   readonly push: PushNotificationManager
+  /** Bot accounts, API keys, and incoming/outbound webhooks. */
+  readonly bots: BotManager
+  /** Full-text message search (when enabled on the server). */
+  readonly search: SearchManager
+  /** Notification occurrences and per-scope notification policies. */
+  readonly notifications: NotificationManager
   private readonly rest: RestClient
   private readonly realtime: RealtimeConnection
   private readonly ctx: ChattoContext
@@ -109,6 +118,9 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
     this.server = this.ctx.server
     this.voice = this.ctx.voice
     this.push = this.ctx.push
+    this.bots = this.ctx.bots
+    this.search = this.ctx.search
+    this.notifications = this.ctx.notifications
     this.on('error', () => {})
     this.wireRealtime()
 

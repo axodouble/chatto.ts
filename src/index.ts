@@ -124,3 +124,45 @@ export type {
   RemoveReactionResult,
 } from './schemas/message'
 export type { ThreadFollowState, ThreadReadState, MarkThreadAsReadResult, ThreadRootAuthorFilter, ThreadOrder } from './schemas/thread'
+
+// Bots, message search, notifications
+export type { BotManager, ListBotsOptions, CreateBotOptions, CreateOutboundWebhookOptions, UpdateOutboundWebhookOptions, ListWebhookFailuresOptions } from './managers/bots'
+export type {
+  Bot,
+  BotApiKey,
+  BotIncomingWebhook,
+  BotOutboundWebhook,
+  BotWebhookFailure,
+  CredentialLastUsedState,
+  IssuedBotApiKey,
+  CreatedBotIncomingWebhook,
+  CreatedBotOutboundWebhook,
+  BotWebhookFailurePage,
+} from './schemas/bot'
+export type {
+  SearchManager,
+  SearchOptions,
+  SearchAllOptions,
+  SearchResult,
+  SearchPage,
+  SearchStatus,
+  SearchThreadContext,
+  MessageSearchOrder,
+  MessageSearchScope,
+  MessageSearchGroupBy,
+} from './managers/search'
+export type { MessageSearchState } from './schemas/search'
+export type { NotificationManager, NotificationList, NotificationPolicyScopeInput, NotificationDeliveryModeInput, NotificationPolicyChanges } from './managers/notifications'
+export type {
+  NotificationDeliveryMode,
+  NotificationDeliveryModes,
+  NotificationSignalClass,
+  NotificationSignal,
+  NotificationSignalKind,
+  NotificationOccurrence,
+  NotificationAttentionLevel,
+  NotificationMessageReference,
+  NotificationRoomUnreadCount,
+  NotificationPolicyScope,
+  ScopedNotificationPolicy,
+} from './schemas/notification'
