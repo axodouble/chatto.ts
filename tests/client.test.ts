@@ -93,12 +93,50 @@ describe('ChattoClient', () => {
     })
     const received: any[] = []
     client.on('messageCreate', m => received.push(m))
-    // Real frame shape per src/realtime/frames.ts + src/realtime/events.ts:
-    // ServerFrame.event.message_posted = { room_id, message_event_id }
-    mockRt.emit('frame', { event: { id: 'e_1', created_at: 't', actor_id: 'U_1', message_posted: { room_id: 'R_1', message_event_id: 'evt_1' } } })
+    // Decoded RealtimeEvent (src/realtime/frames.ts). For message_posted the
+    // envelope id is the message's event id.
+    mockRt.emit('event', { id: 'evt_1', actorId: 'U_1', event: 'messagePosted', messagePosted: { roomId: 'R_1' } })
     await new Promise(r => setTimeout(r, 10))
     expect(received[0]?.author.displayName).toBe('Name')
     expect(received[0]?.channel.name).toBe('general')
+  })
+
+  it('emits every realtime event as raw and as its typed variant with metadata', () => {
+    const mockRt = makeMockRt()
+    const client = makeClient(mockRt)
+    const raw: any[] = []
+    const typed: any[] = []
+    client.on('raw', e => raw.push(e))
+    client.on('userTyping', (payload, meta) => typed.push({ payload, meta }))
+    const event = { id: 'E1', createdAt: '2026-11-10T00:00:00.000Z', actorId: 'U1', event: 'userTyping', userTyping: { roomId: 'R1' } }
+    mockRt.emit('event', event)
+    expect(raw).toEqual([event])
+    expect(typed).toEqual([{ payload: { roomId: 'R1' }, meta: { id: 'E1', createdAt: '2026-11-10T00:00:00.000Z', actorId: 'U1', cursor: undefined } }])
+  })
+
+  it('forwards snapshot and caughtUp from the realtime connection', () => {
+    const mockRt = makeMockRt()
+    const client = makeClient(mockRt)
+    const seen: string[] = []
+    client.on('snapshot', () => seen.push('snapshot'))
+    client.on('caughtUp', s => seen.push(s.recovery))
+    mockRt.emit('snapshot', { rooms: [], roomGroups: [], users: [], activeCalls: [] })
+    mockRt.emit('caughtUp', { cursor: 'c', recovery: 'REALTIME_RECOVERY_RESUMED' })
+    expect(seen).toEqual(['snapshot', 'REALTIME_RECOVERY_RESUMED'])
+  })
+
+  it('stops with a session_terminated auth error when the server ends the session', () => {
+    const mockRt = makeMockRt()
+    const client = makeClient(mockRt)
+    const errors: Error[] = []
+    const disconnects: unknown[] = []
+    client.on('error', e => errors.push(e))
+    client.on('disconnect', () => disconnects.push(true))
+    mockRt.emit('close', { kind: 'terminated', code: 1000, message: 'logout', retryAfterMs: 0 })
+    expect(errors[0]).toBeInstanceOf(ChattoAuthError)
+    expect((errors[0] as ChattoAuthError).code).toBe('session_terminated')
+    expect(disconnects).toHaveLength(1)
+    expect(mockRt.connect).not.toHaveBeenCalled()
   })
 
   it('does not throw when an error is emitted with no user listener', () => {

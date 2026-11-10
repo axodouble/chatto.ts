@@ -15,6 +15,13 @@ import type { RoomSchema } from './schemas/room'
 import type { MessageDeleteEventSchema, ReactionEventSchema } from './schemas/realtime'
 import type { UserSchema, DirectoryMemberSchema } from './schemas/user'
 import { Message } from './resources/message'
+import type { RealtimeEventMeta, RealtimeEventName } from './realtime/events'
+import type {
+  RealtimeCaughtUp,
+  RealtimeEvent,
+  RealtimeEventPayloads,
+  RealtimeSnapshot,
+} from './realtime/generated'
 
 export type MessageData = z.infer<typeof MessageSchema>
 export type MessageReaction = z.infer<typeof MessageReactionSchema>
@@ -87,17 +94,41 @@ export interface PresenceOptions {
   intervalMs?: number
 }
 
+/** Realtime subscription behavior. */
+export interface RealtimeOptions {
+  /**
+   * What to receive when the client cannot resume from its last cursor
+   * (first connect, or a reconnect after the 15-minute cursor lifetime):
+   * - `'live'` (default): start at the current boundary; no initial state.
+   * - `'snapshot'`: first receive a `snapshot` event with the server profile,
+   *   visible rooms and room groups, referenced users, and active calls.
+   */
+  initialState?: 'live' | 'snapshot'
+  /** Reconnect when no frame (heartbeat or event) arrives for this long. Default 75000 ms. */
+  heartbeatTimeoutMs?: number
+}
+
 export interface ChattoClientOptions {
   baseUrl: string
+  /** Bearer token: a session access token or a bot API key. */
   token: string
   /** Retained password credentials; enables automatic re-login on auth failure. */
   credentials?: { login: string; password: string }
   reconnect?: ReconnectOptions
   refresh?: RefreshOptions
   presence?: PresenceOptions
+  realtime?: RealtimeOptions
 }
 
-export interface ClientEventMap {
+/**
+ * One entry per realtime event variant: `client.on('roomCreated', (payload, meta) => ...)`.
+ * Payload types are generated from Chatto's `chatto.realtime.v1` protos.
+ */
+export type RealtimeEventMap = {
+  [K in RealtimeEventName]: [payload: RealtimeEventPayloads[K], meta: RealtimeEventMeta]
+}
+
+export interface ClientEventMap extends RealtimeEventMap {
   ready: []
   messageCreate: [message: Message]
   messageUpdate: [message: Message]
@@ -110,4 +141,14 @@ export interface ClientEventMap {
   tokenRefresh: []
   /** Emitted before each reconnect attempt. */
   reconnecting: [attempt: number, delayMs: number]
+  /** Every decoded realtime event, before the typed and convenience events. */
+  raw: [event: RealtimeEvent]
+  /** Initial state, when `realtime.initialState` is `'snapshot'` and the stream was not resumed. */
+  snapshot: [snapshot: RealtimeSnapshot]
+  /**
+   * The stream reached live delivery. `recovery` is `REALTIME_RECOVERY_RESUMED`
+   * when no events were missed across a reconnect; `SNAPSHOT`/`LIVE_ONLY` means
+   * events during the outage may be missing — refetch state you depend on.
+   */
+  caughtUp: [state: RealtimeCaughtUp]
 }

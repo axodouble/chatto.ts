@@ -1,7 +1,8 @@
 import { EventEmitter } from 'events'
 import { RestClient } from './rest/client'
-import { RealtimeConnection, type CloseReason } from './realtime/connection'
-import { mapFrameToEvent } from './realtime/events'
+import { RealtimeConnection, type CloseReason, type RealtimeConnectionOptions } from './realtime/connection'
+import { mapRealtimeEvent, toTypedEvent } from './realtime/events'
+import type { RealtimeEvent } from './realtime/generated'
 import { ChattoContext } from './context'
 import { loginWithPassword } from './auth/integrated'
 import { TokenStore } from './auth/token-store'
@@ -11,7 +12,6 @@ import type { ThreadManager } from './managers/threads'
 import type { UserManager } from './managers/users'
 import type { AssetManager } from './managers/assets'
 import type { ChattoClientOptions, ClientEventMap, ReconnectOptions, PresenceInput, CustomStatusInput, CustomStatus } from './types'
-import type { ServerFrame } from './realtime/frames'
 import { ChattoAuthError } from './errors'
 import { normalizePresence } from './account/presence'
 
@@ -38,7 +38,11 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
 
   constructor(
     options: ChattoClientOptions,
-    realtimeFactory?: (wsUrl: string, getToken: () => string) => RealtimeConnection,
+    realtimeFactory?: (
+      wsUrl: string,
+      getToken: () => string,
+      options: RealtimeConnectionOptions,
+    ) => RealtimeConnection,
   ) {
     super()
     const wsUrl = options.baseUrl.replace(/^https?/, m => (m === 'https' ? 'wss' : 'ws')) + '/api/realtime'
@@ -59,9 +63,15 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
       getToken,
       this.store.canRefresh() ? async () => { await this.store.refresh() } : undefined,
     )
+    const realtimeOptions: RealtimeConnectionOptions = {
+      initialState: options.realtime?.initialState === 'snapshot'
+        ? 'REALTIME_INITIAL_STATE_SNAPSHOT'
+        : 'REALTIME_INITIAL_STATE_LIVE_ONLY',
+      heartbeatTimeoutMs: options.realtime?.heartbeatTimeoutMs,
+    }
     this.realtime = realtimeFactory
-      ? realtimeFactory(wsUrl, getToken)
-      : new RealtimeConnection(wsUrl, getToken)
+      ? realtimeFactory(wsUrl, getToken, realtimeOptions)
+      : new RealtimeConnection(wsUrl, getToken, undefined, realtimeOptions)
     this.ctx = new ChattoContext(this.rest)
     this.rooms = this.ctx.rooms
     this.messages = this.ctx.messages
@@ -165,37 +175,24 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
   }
 
   private wireRealtime(): void {
-    this.realtime.on('frame', (frame: ServerFrame) => {
-      const event = mapFrameToEvent(frame)
-      if (event == null) return
-
-      const hydrate = async () => {
-        if (event.kind === 'messageCreate') {
-          const msg = await this.messages.fetch(event.roomId, event.messageEventId)
-          this.emit('messageCreate', msg)
-        } else if (event.kind === 'messageUpdate') {
-          const msg = await this.messages.fetch(event.roomId, event.messageEventId)
-          this.emit('messageUpdate', msg)
-        } else if (event.kind === 'messageDelete') {
-          this.emit('messageDelete', event.event)
-        } else if (event.kind === 'reactionAdd') {
-          this.emit('reactionAdd', event.event)
-        } else if (event.kind === 'reactionRemove') {
-          this.emit('reactionRemove', event.event)
-        }
-      }
-
-      hydrate().catch(err => {
-        this.emit('error', err instanceof Error ? err : new Error(String(err)))
-      })
-    })
-
+    this.realtime.on('event', (event: RealtimeEvent) => this.dispatchRealtimeEvent(event))
+    this.realtime.on('snapshot', snapshot => this.emit('snapshot', snapshot))
+    this.realtime.on('caughtUp', state => this.emit('caughtUp', state))
     this.realtime.on('error', (err: Error) => this.emit('error', err))
 
     this.realtime.on('close', (reason: CloseReason) => {
       if (this.closedByUser) return
       if (reason.kind === 'clean' || reason.kind === 'fatal') {
         this.teardownPresence()
+        if (reason.kind === 'fatal') {
+          this.emit('error', new Error(`realtime closed: ${reason.realtimeCode ?? reason.code}${reason.message ? ` (${reason.message})` : ''}`))
+        }
+        this.emit('disconnect')
+        return
+      }
+      if (reason.kind === 'terminated') {
+        this.teardownPresence()
+        this.emit('error', new ChattoAuthError('session_terminated', reason.message || 'The server ended this session'))
         this.emit('disconnect')
         return
       }
@@ -206,6 +203,39 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
         return
       }
       this.startReconnect(reason)
+    })
+  }
+
+  private dispatchRealtimeEvent(event: RealtimeEvent): void {
+    this.emit('raw', event)
+    const typed = toTypedEvent(event)
+    if (typed != null) {
+      ;(this.emit as (name: string, ...args: unknown[]) => boolean)(typed.name, typed.payload, typed.meta)
+    }
+
+    const sdkEvent = mapRealtimeEvent(event)
+    if (sdkEvent == null) return
+    const hydrate = async () => {
+      switch (sdkEvent.kind) {
+        case 'messageCreate':
+          this.emit('messageCreate', await this.messages.fetch(sdkEvent.roomId, sdkEvent.messageEventId))
+          break
+        case 'messageUpdate':
+          this.emit('messageUpdate', await this.messages.fetch(sdkEvent.roomId, sdkEvent.messageEventId))
+          break
+        case 'messageDelete':
+          this.emit('messageDelete', sdkEvent.event)
+          break
+        case 'reactionAdd':
+          this.emit('reactionAdd', sdkEvent.event)
+          break
+        case 'reactionRemove':
+          this.emit('reactionRemove', sdkEvent.event)
+          break
+      }
+    }
+    hydrate().catch(err => {
+      this.emit('error', err instanceof Error ? err : new Error(String(err)))
     })
   }
 

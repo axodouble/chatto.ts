@@ -38,6 +38,7 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "tsc",
+    "gen:realtime": "bun scripts/gen-realtime.ts",
     "test:server:up": "docker compose -f docker/compose.yml up -d --wait && ./docker/seed.sh",
     "test:server:down": "docker compose -f docker/compose.yml down -v",
     "test:live": "bun --env-file=.env.test test tests/integration"
