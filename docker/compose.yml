@@ -1,0 +1,22 @@
+# Disposable Chatto v0.5.0 server for the SDK's live integration tests.
+# See README "Running the live tests locally". TEST-ONLY: not for production.
+name: chatto-ts-test
+
+services:
+  chatto:
+    image: ghcr.io/chattocorp/chatto:0.5.0
+    command: ['start', '-c', '/config/chatto.toml']
+    ports:
+      - '127.0.0.1:${CHATTO_TEST_PORT:-4000}:4000'
+    volumes:
+      - ./chatto.toml:/config/chatto.toml:ro
+      - chatto_data:/data
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:4000/readyz']
+      interval: 2s
+      timeout: 3s
+      retries: 60
+      start_period: 5s
+
+volumes:
+  chatto_data:

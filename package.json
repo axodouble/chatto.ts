@@ -37,7 +37,10 @@
     "build": "tsc",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "tsc"
+    "prepublishOnly": "tsc",
+    "test:server:up": "docker compose -f docker/compose.yml up -d --wait && ./docker/seed.sh",
+    "test:server:down": "docker compose -f docker/compose.yml down -v",
+    "test:live": "bun --env-file=.env.test test tests/integration"
   },
   "dependencies": {
     "protobufjs": "^8.7.1",

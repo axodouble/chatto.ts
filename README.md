@@ -168,6 +168,20 @@ client.on('reconnecting', (attempt, delayMs) => {
 })
 ```
 
+## Running the live tests locally
+
+The live integration tests (`tests/integration`) can run against a disposable Chatto `v0.5.0` server in Docker instead of a real instance.
+Requires Docker with Compose, `curl` and `jq`.
+
+```bash
+bun run test:server:up    # start the server on http://localhost:4000, seed it, write .env.test
+bun run test:live         # run tests/integration with .env.test (your .env is left alone)
+bun run test:server:down  # stop the server and delete its data
+```
+
+The seed script (`docker/seed.sh`) completes first-run setup with an owner account `sdktest` / `chatto-ts-test-password`, creates a `#sdk-tests` channel, and is safe to re-run.
+All secrets in `docker/chatto.toml` are throwaway test values; do not reuse them.
+
 I do not own nor claim any ownership of the Chatto name or brand. Chatto and similar branding is all owned by their respective owners.
 I do not have any affiliation with Chatto.
 
