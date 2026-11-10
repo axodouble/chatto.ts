@@ -7,9 +7,7 @@ import type { Page, PageOptions } from '../util/page'
 import type { RoomViewerState, RoomWithViewerState, RoomTimelinePage } from '../schemas/room'
 import type { RoomNotice, RoomReadState, MarkRoomAsReadResult, RoomSuspension } from '../schemas/room-service'
 import type { RoomInvitation } from '../schemas/room-invitation'
-import { resolveMessagePayload } from '../builders/payload'
-import { prepareCreateInput } from '../builders/create-input'
-import { MessageResponseSchema } from '../schemas/message'
+import { MessageManager } from '../managers/messages'
 import {
   RoomManager,
   type FetchEventsOptions,
@@ -120,23 +118,9 @@ export class Room {
     return new RoomManager(this.ctx)
   }
 
-  // TODO(lead): switch to the shared CreateMessage body builder from builders/create-input.
+  /** Send a message to this room. See `MessageManager.send`. */
   async send(payload: MessagePayload): Promise<Message> {
-    const input = await prepareCreateInput(this.ctx, this.id, resolveMessagePayload(payload))
-    const res = await this.ctx.rest.post(
-      'chatto.api.v1.MessageService',
-      'CreateMessage',
-      {
-        roomId: input.roomId,
-        body: input.body,
-        attachmentAssetIds: input.attachmentAssetIds,
-        inReplyTo: input.inReplyTo,
-        threadRootEventId: input.threadRootEventId,
-        alsoSendToChannel: input.alsoSendToChannel,
-      },
-      MessageResponseSchema,
-    )
-    return this.ctx.hydrateMessage(res.message)
+    return new MessageManager(this.ctx).send(this.id, payload)
   }
 
   // --- Timeline ---------------------------------------------------------------

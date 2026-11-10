@@ -105,3 +105,22 @@ export type {
 } from './schemas/room'
 export type { MarkRoomAsReadResult, ReadMarker, RoomAttachmentListItem, RoomNotice, RoomReadState, RoomSuspension } from './schemas/room-service'
 export type { RoomInvitation, RoomInvitationStatus } from './schemas/room-invitation'
+
+// Messages and threads
+export { toReactionName } from './util/emoji'
+export type { MessageManager } from './managers/messages'
+export type { ThreadManager, ThreadEventsPage, ThreadEventsWindow, FollowedThread, ListFollowedThreadsOptions, ThreadTarget } from './managers/threads'
+export type { MessageOptions, MessageFileInput, MessageEditPayload } from './builders/payload'
+export type { PendingFile } from './builders/message'
+export type {
+  LinkPreview,
+  SocialPostPreview,
+  ThreadSummary,
+  ThreadViewerState,
+  MessageViewerState,
+  MessageAttachmentDescriptionInput,
+  FetchLinkPreviewResult,
+  AddReactionResult,
+  RemoveReactionResult,
+} from './schemas/message'
+export type { ThreadFollowState, ThreadReadState, MarkThreadAsReadResult, ThreadRootAuthorFilter, ThreadOrder } from './schemas/thread'

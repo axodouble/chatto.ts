@@ -127,7 +127,7 @@ describe('Message', () => {
       const updated = await msg.edit('Updated')
       expect(ctx.rest.post).toHaveBeenCalledWith(
         'chatto.api.v1.MessageService', 'UpdateMessage',
-        expect.objectContaining({ roomId: 'R_1', eventId: 'evt_1', body: 'Updated' }),
+        { roomId: 'R_1', eventId: 'evt_1', body: 'Updated', updateMask: 'body' },
         expect.anything(),
       )
       expect(updated).toBeInstanceOf(Message)
@@ -145,11 +145,126 @@ describe('Message', () => {
     })
     it('react calls AddReaction', async () => {
       const ctx = makeCtx({ added: true })
-      await makeMessage(validMessageData, ctx).react('👍')
+      await makeMessage(validMessageData, ctx).react('thumbsup')
       expect(ctx.rest.post).toHaveBeenCalledWith(
         'chatto.api.v1.MessageService', 'AddReaction',
-        { roomId: 'R_1', messageEventId: 'evt_1', emoji: '👍' }, expect.anything(),
+        { roomId: 'R_1', messageEventId: 'evt_1', emoji: 'thumbsup' }, expect.anything(),
       )
+    })
+  })
+
+  describe('v0.5 fields', () => {
+    it('exposes thread, pin, deletion, viewer state, link preview, reactions and echo ids', () => {
+      const msg = makeMessage({
+        ...validMessageData,
+        reactions: [{ emoji: 'heart', count: 2, hasReacted: true, previewUserIds: [] }],
+        linkPreview: { url: 'https://example.com', title: 'Example' },
+        thread: { threadRootEventId: 'evt_1', replyCount: 3, participantPreviewUserIds: [], participantCount: 2 },
+        pinned: true,
+        deletedAt: '2026-01-01T00:00:00Z',
+        viewerState: { canReplyInThread: true },
+        channelEchoEventId: 'evt_echo',
+      }, makeCtx(null))
+      expect(msg.reactions[0]?.emoji).toBe('heart')
+      expect(msg.linkPreview?.title).toBe('Example')
+      expect(msg.thread?.replyCount).toBe(3)
+      expect(msg.pinned).toBe(true)
+      expect(msg.deletedAt).toBe('2026-01-01T00:00:00Z')
+      expect(msg.viewerState?.canReplyInThread).toBe(true)
+      expect(msg.channelEchoEventId).toBe('evt_echo')
+      expect(msg.threadRootId).toBe('evt_1')
+      expect(msg.isThreadReply).toBe(false)
+    })
+
+    it('resolves canonical id and thread root for a channel echo', () => {
+      const echo = makeMessage(
+        { ...validMessageData, id: 'evt_echo', echoOfEventId: 'evt_reply', echoFromThreadRootEventId: 'evt_root' },
+        makeCtx(null),
+      )
+      expect(echo.isEcho).toBe(true)
+      expect(echo.canonicalId).toBe('evt_reply')
+      expect(echo.threadRootId).toBe('evt_root')
+    })
+  })
+
+  describe('v0.5 convenience methods', () => {
+    function lastCall(ctx: any) {
+      const c = ctx.rest.post.mock.calls.at(-1)
+      return [c[0], c[1], c[2]]
+    }
+
+    it('reply() on an echo targets the original reply and its thread', async () => {
+      const ctx = makeCtx({ message: { ...validMessageData, id: 'evt_2' } })
+      const echo = makeMessage(
+        { ...validMessageData, id: 'evt_echo', echoOfEventId: 'evt_reply', echoFromThreadRootEventId: 'evt_root' }, ctx,
+      )
+      await echo.reply('hi')
+      expect(lastCall(ctx)[2]).toMatchObject({ inReplyTo: 'evt_reply', threadRootEventId: 'evt_root' })
+      expect(lastCall(ctx)[2].idempotencyKey).toBeString()
+    })
+
+    it('react() maps Unicode emoji to the shortcode name', async () => {
+      const ctx = makeCtx({ added: true })
+      await makeMessage(validMessageData, ctx).react('👍')
+      expect(lastCall(ctx)[2].emoji).toBe('thumbsup')
+    })
+
+    it('fetchReactionUsers() calls ListReactionUsers', async () => {
+      const ctx = makeCtx({ userIds: ['U_2'], page: { totalCount: 1, hasMore: false } })
+      const page = await makeMessage(validMessageData, ctx).fetchReactionUsers('heart')
+      expect(lastCall(ctx)).toEqual(['chatto.api.v1.MessageService', 'ListReactionUsers',
+        { roomId: 'R_1', messageEventId: 'evt_1', emoji: 'heart', page: undefined }])
+      expect(page.items).toEqual(['U_2'])
+    })
+
+    it('setAttachmentDescription() calls SetAttachmentDescription', async () => {
+      const ctx = makeCtx({ message: validMessageData })
+      await makeMessage(validMessageData, ctx).setAttachmentDescription('at_1', 'alt')
+      expect(lastCall(ctx)).toEqual(['chatto.api.v1.MessageService', 'SetAttachmentDescription',
+        { roomId: 'R_1', eventId: 'evt_1', attachmentId: 'at_1', description: 'alt' }])
+    })
+
+    it('removeLinkPreview() defaults to the current preview URL and is a no-op without one', async () => {
+      const ctx = makeCtx({})
+      await makeMessage(validMessageData, ctx).removeLinkPreview()
+      expect(ctx.rest.post).not.toHaveBeenCalled()
+      await makeMessage({ ...validMessageData, linkPreview: { url: 'https://e.com' } }, ctx).removeLinkPreview()
+      expect(lastCall(ctx)).toEqual(['chatto.api.v1.MessageService', 'DeleteLinkPreview',
+        { roomId: 'R_1', eventId: 'evt_1', url: 'https://e.com' }])
+    })
+
+    it('pin()/unpin() use the canonical message id', async () => {
+      const ctx = makeCtx({ deleted: true })
+      const echo = makeMessage({ ...validMessageData, id: 'evt_echo', echoOfEventId: 'evt_reply' }, ctx)
+      expect(await echo.unpin()).toBe(true)
+      expect(lastCall(ctx)).toEqual(['chatto.api.v1.RoomService', 'DeletePinnedMessage',
+        { roomId: 'R_1', messageEventId: 'evt_reply' }])
+      ctx.rest.post = mock().mockResolvedValue({ pinnedMessage: { message: validMessageData } })
+      await echo.pin()
+      expect(lastCall(ctx)).toEqual(['chatto.api.v1.RoomService', 'CreatePinnedMessage',
+        { roomId: 'R_1', messageEventId: 'evt_reply' }])
+    })
+
+    it('thread helpers target this message\'s thread root', async () => {
+      const ctx = makeCtx({ state: { roomId: 'R_1', threadRootEventId: 'evt_0', following: true } })
+      const reply = makeMessage({ ...validMessageData, threadRootEventId: 'evt_0' }, ctx)
+      await reply.follow()
+      expect(lastCall(ctx)).toEqual(['chatto.api.v1.ThreadService', 'FollowThread', { roomId: 'R_1', threadRootEventId: 'evt_0' }])
+      await reply.unfollow()
+      expect(lastCall(ctx)[1]).toBe('UnfollowThread')
+      await reply.markThreadRead()
+      expect(lastCall(ctx)).toEqual(['chatto.api.v1.ThreadService', 'MarkThreadAsRead',
+        { roomId: 'R_1', threadRootEventId: 'evt_0', upToEventId: 'evt_1' }])
+      await makeMessage(validMessageData, ctx).markThreadRead()
+      expect(lastCall(ctx)[2]).toEqual({ roomId: 'R_1', threadRootEventId: 'evt_1', upToEventId: undefined })
+    })
+
+    it('fetchThread() calls GetThreadEvents for the root', async () => {
+      const ctx = makeCtx({ page: { events: [], hasOlder: false, hasNewer: false } })
+      const page = await makeMessage(validMessageData, ctx).fetchThread({ limit: 5 })
+      expect(lastCall(ctx)).toEqual(['chatto.api.v1.ThreadService', 'GetThreadEvents',
+        { roomId: 'R_1', threadRootEventId: 'evt_1', limit: 5, before: undefined, after: undefined }])
+      expect(page.messages).toEqual([])
     })
   })
 })

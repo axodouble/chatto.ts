@@ -48,6 +48,16 @@ describe('Room', () => {
       expect(sent).toBeInstanceOf(Message)
     })
 
+    it('sends the Chatto 0.5 CreateMessage fields (idempotency key, createThread)', async () => {
+      const msgData = { id: 'evt_1', roomId: 'R_1', createdAt: 't', actorId: 'U_1', body: 'hi' }
+      const ctx = makeCtx({ message: msgData })
+      const room = new Room(roomData as any, ctx)
+      await room.send({ content: 'hi', createThread: true })
+      const body = ctx.rest.post.mock.calls[0][2]
+      expect(body.createThread).toBe(true)
+      expect(body.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/)
+    })
+
     it('uploads pending files and attaches the resulting asset ids', async () => {
       const msgData = { id: 'evt_1', roomId: 'R_1', createdAt: 't', actorId: 'U_1', body: 'hi', reactions: [] }
       const ctx = makeCtx({ message: msgData })
