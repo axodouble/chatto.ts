@@ -58,3 +58,11 @@ export const SetCustomStatusResponseSchema = z.object({
 export const DeleteCustomStatusResponseSchema = z.object({
   status: CustomUserStatusSchema.optional(),
 })
+
+export type PresenceStatus = z.infer<typeof PresenceStatusSchema>
+
+/** UpdateUserProfile / UploadAvatar / DeleteAvatar all return the bare public `User`. */
+export const UserProfileResponseSchema = z.object({ user: UserSchema })
+export const UpdateUserProfileResponseSchema = UserProfileResponseSchema
+export const UploadAvatarResponseSchema = UserProfileResponseSchema
+export const DeleteAvatarResponseSchema = UserProfileResponseSchema

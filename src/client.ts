@@ -12,6 +12,13 @@ import type { MessageManager } from './managers/messages'
 import type { ThreadManager } from './managers/threads'
 import type { UserManager } from './managers/users'
 import type { AssetManager } from './managers/assets'
+import type { AccountManager } from './managers/account'
+import type { ViewerManager } from './managers/viewer'
+import type { PermissionManager } from './managers/permissions'
+import type { RoleManager } from './managers/roles'
+import type { ServerManager } from './managers/server'
+import type { VoiceCallManager } from './managers/voice'
+import type { PushNotificationManager } from './managers/push'
 import type { SessionTokens } from './auth/token-store'
 import type { ChattoClientOptions, ClientEventMap, ReconnectOptions, PresenceInput, CustomStatusInput, CustomStatus } from './types'
 import { ChattoAuthError } from './errors'
@@ -24,6 +31,16 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
   readonly threads: ThreadManager
   readonly users: UserManager
   readonly assets: AssetManager
+  /** The signed-in account: presence, custom status, settings, emails, password. */
+  readonly account: AccountManager
+  /** The authenticated viewer and privileged mode. */
+  readonly viewer: ViewerManager
+  readonly permissions: PermissionManager
+  readonly roles: RoleManager
+  /** Server profile, message of the day, and runtime limits. */
+  readonly server: ServerManager
+  readonly voice: VoiceCallManager
+  readonly push: PushNotificationManager
   private readonly rest: RestClient
   private readonly realtime: RealtimeConnection
   private readonly ctx: ChattoContext
@@ -86,6 +103,13 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
     this.threads = this.ctx.threads
     this.users = this.ctx.users
     this.assets = this.ctx.assets
+    this.account = this.ctx.account
+    this.viewer = this.ctx.viewer
+    this.permissions = this.ctx.permissions
+    this.roles = this.ctx.roles
+    this.server = this.ctx.server
+    this.voice = this.ctx.voice
+    this.push = this.ctx.push
     this.on('error', () => {})
     this.wireRealtime()
 

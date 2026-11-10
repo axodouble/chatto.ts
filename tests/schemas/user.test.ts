@@ -121,3 +121,14 @@ describe('status response schemas', () => {
     expect(parsed.status).toBeUndefined()
   })
 })
+
+describe('UserProfileResponseSchema', () => {
+  it('parses a bare User with v0.5.0 fields and defaults', async () => {
+    const { UserProfileResponseSchema } = await import('../../src/schemas/user')
+    const res = UserProfileResponseSchema.parse({ user: { id: 'B1', bot: {}, timezone: 'UTC' } })
+    expect(res.user.login).toBe('')
+    expect(res.user.bot).toEqual({ ownerUserId: '' })
+    expect(res.user.deactivated).toBe(false)
+    expect(res.user.timezone).toBe('UTC')
+  })
+})

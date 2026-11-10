@@ -9,6 +9,12 @@ import { MessageManager } from './managers/messages'
 import { ThreadManager } from './managers/threads'
 import { AssetManager } from './managers/assets'
 import { AccountManager } from './managers/account'
+import { ViewerManager } from './managers/viewer'
+import { PermissionManager } from './managers/permissions'
+import { RoleManager } from './managers/roles'
+import { ServerManager } from './managers/server'
+import { VoiceCallManager } from './managers/voice'
+import { PushNotificationManager } from './managers/push'
 import { UserCache, RoomCache } from './caches'
 
 export interface ClientContext {
@@ -28,6 +34,12 @@ export class ChattoContext implements ClientContext {
   readonly threads: ThreadManager
   readonly assets: AssetManager
   readonly account: AccountManager
+  readonly viewer: ViewerManager
+  readonly permissions: PermissionManager
+  readonly roles: RoleManager
+  readonly server: ServerManager
+  readonly voice: VoiceCallManager
+  readonly push: PushNotificationManager
   private readonly userCache: UserCache
   private readonly roomCache: RoomCache
 
@@ -39,6 +51,12 @@ export class ChattoContext implements ClientContext {
     this.threads = new ThreadManager(this)
     this.assets = new AssetManager(this)
     this.account = new AccountManager(this)
+    this.viewer = new ViewerManager(this)
+    this.permissions = new PermissionManager(this)
+    this.roles = new RoleManager(this)
+    this.server = new ServerManager(this)
+    this.voice = new VoiceCallManager(this)
+    this.push = new PushNotificationManager(this)
     this.userCache = new UserCache(id => this.users.fetch(id))
     this.roomCache = new RoomCache(id => this.rooms.fetch(id))
   }

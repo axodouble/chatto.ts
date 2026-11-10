@@ -37,3 +37,19 @@ describe('serializeExpiresAt', () => {
     expect(serializeExpiresAt(undefined)).toBeUndefined()
   })
 })
+
+describe('toPresenceStatus', () => {
+  it('maps friendly names, mapping offline/invisible to the real OFFLINE value', async () => {
+    const { toPresenceStatus } = await import('../../src/account/presence')
+    expect(toPresenceStatus('online')).toBe('PRESENCE_STATUS_ONLINE')
+    expect(toPresenceStatus('idle')).toBe('PRESENCE_STATUS_AWAY')
+    expect(toPresenceStatus('invisible')).toBe('PRESENCE_STATUS_OFFLINE')
+    expect(toPresenceStatus('offline')).toBe('PRESENCE_STATUS_OFFLINE')
+  })
+
+  it('passes raw proto names through and rejects garbage', async () => {
+    const { toPresenceStatus } = await import('../../src/account/presence')
+    expect(toPresenceStatus('PRESENCE_STATUS_DO_NOT_DISTURB')).toBe('PRESENCE_STATUS_DO_NOT_DISTURB')
+    expect(() => toPresenceStatus('PRESENCE_STATUS_UNSPECIFIED' as any)).toThrow(ChattoValidationError)
+  })
+})
