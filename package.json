@@ -1,6 +1,6 @@
 {
   "name": "chatto.ts",
-  "version": "0.4.13",
+  "version": "0.5.0",
   "description": "TypeScript SDK for Chatto",
   "author": {
     "name": "Jasper (Axodouble) V.",
