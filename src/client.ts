@@ -4,13 +4,15 @@ import { RealtimeConnection, type CloseReason, type RealtimeConnectionOptions } 
 import { mapRealtimeEvent, toTypedEvent } from './realtime/events'
 import type { RealtimeEvent } from './realtime/generated'
 import { ChattoContext } from './context'
-import { loginWithPassword } from './auth/integrated'
+import { loginWithPassword, logout as logoutSession } from './auth/integrated'
 import { TokenStore } from './auth/token-store'
+import type { ZodTypeAny, z } from 'zod'
 import type { RoomManager } from './managers/rooms'
 import type { MessageManager } from './managers/messages'
 import type { ThreadManager } from './managers/threads'
 import type { UserManager } from './managers/users'
 import type { AssetManager } from './managers/assets'
+import type { SessionTokens } from './auth/token-store'
 import type { ChattoClientOptions, ClientEventMap, ReconnectOptions, PresenceInput, CustomStatusInput, CustomStatus } from './types'
 import { ChattoAuthError } from './errors'
 import { normalizePresence } from './account/presence'
@@ -30,6 +32,8 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
   private reconnectAttempt = 0
   private readonly reconnectOpts: Required<ReconnectOptions>
   private refreshTimer: ReturnType<typeof setInterval> | null = null
+  private proactiveRefreshTimer: ReturnType<typeof setTimeout> | null = null
+  private readonly baseUrl: string
   private closedByUser = false
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private presenceTimer: ReturnType<typeof setInterval> | null = null
@@ -46,7 +50,11 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
   ) {
     super()
     const wsUrl = options.baseUrl.replace(/^https?/, m => (m === 'https' ? 'wss' : 'ws')) + '/api/realtime'
-    this.store = new TokenStore(options.baseUrl, options.token, options.credentials)
+    this.baseUrl = options.baseUrl
+    this.store = new TokenStore(options.baseUrl, options.token, options.credentials, undefined, {
+      refreshToken: options.refreshToken,
+      expiresAt: options.tokenExpiresAt instanceof Date ? options.tokenExpiresAt.getTime() : options.tokenExpiresAt,
+    })
     this.reconnectOpts = {
       baseDelayMs: options.reconnect?.baseDelayMs ?? 1000,
       maxDelayMs: options.reconnect?.maxDelayMs ?? 30000,
@@ -61,7 +69,7 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
     this.rest = new RestClient(
       options.baseUrl,
       getToken,
-      this.store.canRefresh() ? async () => { await this.store.refresh() } : undefined,
+      this.store.canRefresh() ? () => this.refreshToken() : undefined,
     )
     const realtimeOptions: RealtimeConnectionOptions = {
       initialState: options.realtime?.initialState === 'snapshot'
@@ -84,26 +92,102 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
     const intervalMs = options.refresh?.intervalMs
     if (intervalMs != null && intervalMs > 0 && this.store.canRefresh()) {
       this.refreshTimer = setInterval(() => {
-        this.store.refresh()
-          .then(() => this.emit('tokenRefresh'))
-          .catch(err => this.emit('error', err instanceof Error ? err : new Error(String(err))))
+        this.refreshToken().catch(err => this.emit('error', err instanceof Error ? err : new Error(String(err))))
       }, intervalMs)
     }
   }
 
-  static async login(options: { baseUrl: string; login: string; password: string }): Promise<ChattoClient> {
-    const { token } = await loginWithPassword(options.baseUrl, options.login, options.password)
+  /**
+   * Sign in with a password and return a client for the resulting session.
+   * The session is renewed with its rotating refresh token; the password is
+   * retained only as a fallback when `retainCredentials` is true (the default,
+   * for compatibility). Pass extra client options (reconnect, realtime, ...)
+   * through `options`.
+   */
+  static async login(
+    options: { baseUrl: string; login: string; password: string; retainCredentials?: boolean } &
+      Omit<ChattoClientOptions, 'baseUrl' | 'token' | 'credentials' | 'refreshToken' | 'tokenExpiresAt'>,
+  ): Promise<ChattoClient> {
+    const { login, password, retainCredentials = true, ...rest } = options
+    const result = await loginWithPassword(options.baseUrl, login, password)
     return new ChattoClient({
-      baseUrl: options.baseUrl,
-      token,
-      credentials: { login: options.login, password: options.password },
+      ...rest,
+      token: result.token,
+      refreshToken: result.refreshToken,
+      tokenExpiresAt: result.expiresIn != null ? Date.now() + result.expiresIn * 1000 : undefined,
+      credentials: retainCredentials ? { login, password } : undefined,
     })
+  }
+
+  /** The current bearer session (token, refresh token, expiry), e.g. to persist it. */
+  get session(): SessionTokens {
+    return this.store.getSession()
   }
 
   async connect(): Promise<void> {
     this.closedByUser = false
+    // Renew an access token that is about to expire before subscribing.
+    const remaining = this.store.msUntilExpiry()
+    if (remaining != null && remaining < 60_000 && this.store.canRefresh()) await this.refreshToken()
     await this.realtime.connect()
+    this.scheduleProactiveRefresh()
     this.emit('ready')
+  }
+
+  /**
+   * Revoke this session on the server (access and refresh token) and disconnect.
+   * Bot API keys are not revoked by logout; manage them with the bots API.
+   */
+  async logout(): Promise<void> {
+    const session = this.store.getSession()
+    await this.disconnect()
+    await logoutSession(this.baseUrl, session.token, session.refreshToken)
+  }
+
+  /**
+   * Call any ConnectRPC method directly — an escape hatch for APIs without a
+   * typed wrapper (e.g. `chatto.admin.v1.*`). The input uses proto3 JSON
+   * (lowerCamelCase fields, int64 as strings, enums by name). Pass a Zod schema
+   * to validate and type the response; otherwise the raw JSON is returned.
+   */
+  rpc<S extends ZodTypeAny>(service: string, method: string, input: unknown, schema: S): Promise<z.output<S>>
+  rpc(service: string, method: string, input?: unknown): Promise<unknown>
+  rpc(service: string, method: string, input: unknown = {}, schema?: ZodTypeAny): Promise<unknown> {
+    return this.rest.call(service, method, input, schema)
+  }
+
+  /** Renew the access token now (refresh token first, then password fallback). */
+  async refreshToken(): Promise<void> {
+    await this.store.refresh()
+    this.emit('tokenRefresh', this.store.getSession())
+    if (this.proactiveRefreshTimer != null) this.scheduleProactiveRefresh()
+  }
+
+  // Keep a connected client's access token fresh so realtime reconnects and
+  // REST calls never start with an expired token.
+  private scheduleProactiveRefresh(): void {
+    this.clearProactiveRefresh()
+    const remaining = this.store.msUntilExpiry()
+    if (remaining == null || !this.store.canRefresh() || this.closedByUser) return
+    const delay = Math.max(5_000, remaining - 60_000)
+    this.proactiveRefreshTimer = setTimeout(() => {
+      this.proactiveRefreshTimer = null
+      this.refreshToken()
+        .then(() => this.scheduleProactiveRefresh())
+        .catch(err => {
+          this.emit('error', err instanceof Error ? err : new Error(String(err)))
+          // Retry soon; the realtime/REST auth paths also refresh on demand.
+          if (!this.closedByUser) this.proactiveRefreshTimer = setTimeout(() => this.scheduleProactiveRefresh(), 30_000)
+        })
+    }, delay)
+    this.proactiveRefreshTimer.unref?.()
+  }
+
+  private clearProactiveRefresh(): void {
+    if (this.proactiveRefreshTimer != null) {
+      clearTimeout(this.proactiveRefreshTimer)
+      this.proactiveRefreshTimer = null
+    }
   }
 
   async disconnect(): Promise<void> {
@@ -117,6 +201,7 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
       clearInterval(this.refreshTimer)
       this.refreshTimer = null
     }
+    this.clearProactiveRefresh()
     this.teardownPresence()
     this.realtime.disconnect()
     this.emit('disconnect')
@@ -278,10 +363,10 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
 
   private async doReconnect(reason: CloseReason): Promise<void> {
     if (reason.kind === 'auth' && this.store.canRefresh()) {
-      await this.store.refresh()
-      this.emit('tokenRefresh')
+      await this.refreshToken()
     }
     await this.realtime.connect()
+    this.scheduleProactiveRefresh()
     this.reconnecting = false
     this.reconnectAttempt = 0
   }

@@ -15,6 +15,7 @@ import type { RoomSchema } from './schemas/room'
 import type { MessageDeleteEventSchema, ReactionEventSchema } from './schemas/realtime'
 import type { UserSchema, DirectoryMemberSchema } from './schemas/user'
 import { Message } from './resources/message'
+import type { SessionTokens } from './auth/token-store'
 import type { RealtimeEventMeta, RealtimeEventName } from './realtime/events'
 import type {
   RealtimeCaughtUp,
@@ -112,6 +113,10 @@ export interface ChattoClientOptions {
   baseUrl: string
   /** Bearer token: a session access token or a bot API key. */
   token: string
+  /** Rotating refresh token from a password login; enables silent renewal. */
+  refreshToken?: string
+  /** When `token` expires (Date or epoch ms); enables proactive renewal. */
+  tokenExpiresAt?: Date | number
   /** Retained password credentials; enables automatic re-login on auth failure. */
   credentials?: { login: string; password: string }
   reconnect?: ReconnectOptions
@@ -137,8 +142,11 @@ export interface ClientEventMap extends RealtimeEventMap {
   reactionRemove: [event: ReactionEvent]
   error: [err: Error]
   disconnect: []
-  /** Emitted after a successful re-login applied a new token. */
-  tokenRefresh: []
+  /**
+   * Emitted after the session was renewed. Persist `session.refreshToken`:
+   * refresh tokens rotate and the previous one is no longer valid.
+   */
+  tokenRefresh: [session: SessionTokens]
   /** Emitted before each reconnect attempt. */
   reconnecting: [attempt: number, delayMs: number]
   /** Every decoded realtime event, before the typed and convenience events. */

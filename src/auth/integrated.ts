@@ -1,9 +1,16 @@
 import { z } from 'zod'
-import { ChattoApiError, ChattoParseError } from '../errors'
+import { ChattoApiError, ChattoAuthError, ChattoParseError } from '../errors'
 
 const LoginResponseSchema = z.object({
   success: z.boolean(),
+  /** Short-lived bearer access token (15 minutes by default on Chatto 0.5). */
   token: z.string(),
+  /** Rotating refresh token for `refreshSession` (Chatto 0.5+). */
+  refreshToken: z.string().optional(),
+  /** Access-token lifetime in seconds. */
+  expiresIn: z.number().optional(),
+  /** Remaining lifetime of the renewable session in seconds. */
+  refreshTokenExpiresIn: z.number().optional(),
   user: z.object({
     id: z.string(),
     login: z.string(),
@@ -12,6 +19,24 @@ const LoginResponseSchema = z.object({
 
 export type LoginResult = z.infer<typeof LoginResponseSchema>
 
+/** A renewed bearer session. Store the new `refreshToken`: the old one is now spent. */
+export interface RefreshedSession {
+  token: string
+  refreshToken: string
+  /** Access-token lifetime in seconds. */
+  expiresIn: number
+  /** Remaining lifetime of the renewable session in seconds. */
+  refreshTokenExpiresIn: number
+}
+
+const RefreshResponseSchema = z.object({
+  access_token: z.string(),
+  refresh_token: z.string(),
+  expires_in: z.number(),
+  refresh_token_expires_in: z.number(),
+})
+
+/** Sign in with a login (username or email) and password via `POST /auth/login`. */
 export async function loginWithPassword(
   baseUrl: string,
   login: string,
@@ -38,4 +63,46 @@ export async function loginWithPassword(
     throw new ChattoParseError(parsed.error.issues, body)
   }
   return parsed.data
+}
+
+/**
+ * Rotate a bearer session with the OAuth `refresh_token` grant (`POST /oauth/token`).
+ * Each refresh token is single-use: reusing a spent one revokes the session.
+ */
+export async function refreshSession(baseUrl: string, refreshToken: string): Promise<RefreshedSession> {
+  const res = await fetch(`${baseUrl}/oauth/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: refreshToken }),
+  })
+  const body = await res.json().catch(() => ({})) as Record<string, unknown>
+  if (!res.ok) {
+    const code = typeof body['error'] === 'string' ? body['error'] : 'refresh_failed'
+    const message = typeof body['error_description'] === 'string' ? body['error_description'] : res.statusText
+    throw new ChattoAuthError(code, message)
+  }
+  const parsed = RefreshResponseSchema.safeParse(body)
+  if (!parsed.success) throw new ChattoParseError(parsed.error.issues, body)
+  return {
+    token: parsed.data.access_token,
+    refreshToken: parsed.data.refresh_token,
+    expiresIn: parsed.data.expires_in,
+    refreshTokenExpiresIn: parsed.data.refresh_token_expires_in,
+  }
+}
+
+/**
+ * Revoke a bearer session via `POST /auth/logout`. Revokes the access token and,
+ * when given, the refresh token; the server then ends the user's realtime sessions.
+ */
+export async function logout(baseUrl: string, token: string, refreshToken?: string): Promise<void> {
+  const res = await fetch(`${baseUrl}/auth/logout`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(refreshToken != null ? { refreshToken } : {}),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({})) as Record<string, unknown>
+    throw new ChattoApiError('logout_failed', typeof body['error'] === 'string' ? body['error'] : res.statusText, body)
+  }
 }

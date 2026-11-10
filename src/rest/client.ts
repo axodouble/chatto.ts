@@ -14,6 +14,11 @@ export class RestClient {
     input: unknown,
     schema: S,
   ): Promise<z.output<S>> {
+    return this.call(service, method, input, schema) as Promise<z.output<S>>
+  }
+
+  /** Like `post`, but validation is optional: without a schema the raw JSON is returned. */
+  async call(service: string, method: string, input: unknown, schema?: ZodTypeAny): Promise<unknown> {
     const url = `${this.baseUrl}/api/connect/${service}/${method}`
 
     const attempt = async (): Promise<Response> =>
@@ -44,11 +49,12 @@ export class RestClient {
     }
 
     const body = await res.json()
+    if (schema == null) return body
     const parsed = schema.safeParse(body)
     if (!parsed.success) {
       throw new ChattoParseError(parsed.error.issues, body)
     }
-    return parsed.data as z.output<S>
+    return parsed.data
   }
 
   private isUnauthorized(res: Response): boolean {

@@ -488,4 +488,60 @@ describe('ChattoClient', () => {
   })
 
   afterEach(() => mock.restore())
+
+  describe('session renewal', () => {
+    afterEach(() => mock.restore())
+
+    it('login() keeps the refresh token and expiry from the login response', async () => {
+      spyOn(globalThis, 'fetch').mockImplementation(async () => ({
+        ok: true, status: 200, statusText: 'OK',
+        json: async () => ({ success: true, token: 'at', refreshToken: 'rt', expiresIn: 900, refreshTokenExpiresIn: 1000, user: { id: 'U', login: 'u' } }),
+      }) as Response)
+      const client = await ChattoClient.login({ baseUrl: 'https://c', login: 'u', password: 'p', retainCredentials: false })
+      expect(client.session.token).toBe('at')
+      expect(client.session.refreshToken).toBe('rt')
+      expect(client.session.expiresAt! - Date.now()).toBeGreaterThan(890_000)
+    })
+
+    it('refreshToken() emits tokenRefresh with the rotated session', async () => {
+      spyOn(globalThis, 'fetch').mockImplementation(async () => ({
+        ok: true, status: 200, statusText: 'OK',
+        json: async () => ({ access_token: 'at2', refresh_token: 'rt2', expires_in: 900, refresh_token_expires_in: 1000 }),
+      }) as Response)
+      const client = new ChattoClient({ baseUrl: 'https://c', token: 'at1', refreshToken: 'rt1' }, () => makeMockRt() as unknown as RealtimeConnection)
+      const sessions: any[] = []
+      client.on('tokenRefresh', s => sessions.push(s))
+      await client.refreshToken()
+      expect(sessions[0]).toMatchObject({ token: 'at2', refreshToken: 'rt2' })
+      expect(client.session.token).toBe('at2')
+    })
+
+    it('connect() renews an access token that expires within a minute', async () => {
+      const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async () => ({
+        ok: true, status: 200, statusText: 'OK',
+        json: async () => ({ access_token: 'at2', refresh_token: 'rt2', expires_in: 900, refresh_token_expires_in: 1000 }),
+      }) as Response)
+      const mockRt = makeMockRt()
+      const client = new ChattoClient(
+        { baseUrl: 'https://c', token: 'at1', refreshToken: 'rt1', tokenExpiresAt: Date.now() + 10_000 },
+        () => mockRt as unknown as RealtimeConnection,
+      )
+      await client.connect()
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      expect(client.session.token).toBe('at2')
+      await client.disconnect()
+    })
+
+    it('rpc() calls any service and returns raw JSON without a schema', async () => {
+      const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async () => ({
+        ok: true, status: 200, statusText: 'OK', json: async () => ({ roles: [{ name: 'admin' }] }),
+      }) as Response)
+      const client = new ChattoClient({ baseUrl: 'https://c', token: 'at' }, () => makeMockRt() as unknown as RealtimeConnection)
+      const res = await client.rpc('chatto.admin.v1.RoleService', 'ListRoles')
+      expect(res).toEqual({ roles: [{ name: 'admin' }] })
+      const [url, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit]
+      expect(url).toBe('https://c/api/connect/chatto.admin.v1.RoleService/ListRoles')
+      expect(init.body).toBe('{}')
+    })
+  })
 })
