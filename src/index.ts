@@ -67,3 +67,41 @@ export type { Role } from './schemas/role'
 export type { ServerProfile, ServerRuntimeConfig } from './schemas/server'
 export type { RoomSummary, ActiveCall, CallParticipant, CallToken, CallMediaPublisherKind } from './schemas/voice'
 export type { Page, PageOptions } from './util/page'
+
+// Rooms, room directory, invitations
+export { timelineEventKind, ROOM_TIMELINE_EVENT_KINDS } from './schemas/room'
+export type { RoomManager } from './managers/rooms'
+export type { RoomInvitationManager, ListRoomInvitationsOptions } from './managers/room-invitations'
+export type {
+  CreateRoomInput,
+  UpdateRoomInput,
+  FetchEventsOptions,
+  ListMembersOptions,
+  ListRoomsOptions,
+  ListSuspensionsOptions,
+  PinnedMessagesPage,
+  PublishNoticeOptions,
+  RemoveUserOptions,
+  RoomAttachment,
+  MemberPresenceInput,
+  RoomArchiveFilterInput,
+  RoomScopeInput,
+  ThreadingModeInput,
+} from './managers/rooms'
+export type {
+  PermissionGrant,
+  RoomArchiveFilter,
+  RoomDirectoryScope,
+  RoomGroup,
+  RoomGroupItem,
+  RoomKind,
+  RoomThreadingMode,
+  RoomTimelineEvent,
+  RoomTimelineEventKind,
+  RoomTimelinePage,
+  RoomViewerState,
+  RoomWithViewerState,
+  SidebarLink,
+} from './schemas/room'
+export type { MarkRoomAsReadResult, ReadMarker, RoomAttachmentListItem, RoomNotice, RoomReadState, RoomSuspension } from './schemas/room-service'
+export type { RoomInvitation, RoomInvitationStatus } from './schemas/room-invitation'

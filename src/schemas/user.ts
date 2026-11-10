@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-import { PageInfoSchema } from './room'
+import { PageInfoSchema } from './page'
 
 export const PresenceStatusSchema = z.enum([
   'PRESENCE_STATUS_UNSPECIFIED',
