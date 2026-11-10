@@ -102,7 +102,9 @@ describe('examples/command-bot (offline, against a fake Chatto)', () => {
     expect(replies[0]!.attachments).toHaveLength(1)
     expect(replies[0]!.attachments[0]).toMatchObject({ filename: 'cat.png', contentType: 'image/png' })
     const chunks = server.calls.filter(c => c.method === 'UploadChunk')
-    expect(chunks.length).toBeGreaterThan(1) // 256x256 PNG > one 4 KiB chunk
+    const size = Bun.file(new URL('../../examples/command-bot/assets/cat.png', import.meta.url)).size
+    expect(size).toBeGreaterThan(FakeChatto.MAX_CHUNK_SIZE) // otherwise this test wouldn't exercise chunking
+    expect(chunks).toHaveLength(Math.ceil(size / FakeChatto.MAX_CHUNK_SIZE))
   })
 
   it('!thread replies inside the thread and reads its history back', async () => {

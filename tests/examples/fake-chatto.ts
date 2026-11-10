@@ -31,6 +31,9 @@ interface FakeUser {
 type MockRt = EventEmitter & { connect: ReturnType<typeof mock>; disconnect: ReturnType<typeof mock> }
 
 export class FakeChatto {
+  /** Small on purpose so even a well-compressed test image spans several chunks. */
+  static readonly MAX_CHUNK_SIZE = 1024
+
   readonly baseUrl = 'https://fake.chatto.test'
   readonly room = { id: 'R_general', name: 'general', kind: 'ROOM_KIND_CHANNEL', archived: false, universal: false }
   readonly users = new Map<string, FakeUser>()
@@ -122,7 +125,7 @@ export class FakeChatto {
   private uploadView(id: string, assetId?: string) {
     const up = this.uploads.get(id)!
     return {
-      uploadId: id, roomId: up.roomId, sha256: up.sha256, maxChunkSize: 4096,
+      uploadId: id, roomId: up.roomId, sha256: up.sha256, maxChunkSize: FakeChatto.MAX_CHUNK_SIZE,
       size: String(up.size), committedOffset: String(up.received),
       status: assetId ? 'ASSET_UPLOAD_STATUS_COMPLETED' : 'ASSET_UPLOAD_STATUS_OPEN', assetId,
     }
