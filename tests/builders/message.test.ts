@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test'
 import { MessageBuilder } from '../../src/builders/message'
+import { ChattoValidationError } from '../../src/errors'
 
 describe('MessageBuilder', () => {
   describe('buildCreate', () => {
@@ -77,10 +78,63 @@ describe('MessageBuilder', () => {
       expect(input.body).toBe('Updated')
     })
 
-    it('throws if schema validation fails (missing roomId handled externally)', () => {
-      const input = new MessageBuilder().buildUpdate('room_1', 'evt_1')
-      expect(input.roomId).toBe('room_1')
-      expect(input.eventId).toBe('evt_1')
+    it('sends only the changed fields and names them in updateMask', () => {
+      expect(new MessageBuilder().setContent('x').buildUpdate('r', 'e')).toEqual({
+        roomId: 'r', eventId: 'e', body: 'x', updateMask: 'body',
+      })
+      expect(new MessageBuilder().setAlsoSendToChannel(false).buildUpdate('r', 'e')).toEqual({
+        roomId: 'r', eventId: 'e', alsoSendToChannel: false, updateMask: 'alsoSendToChannel',
+      })
+      expect(new MessageBuilder().setContent('x').setAlsoSendToChannel(true).buildUpdate('r', 'e').updateMask)
+        .toBe('body,alsoSendToChannel')
+    })
+
+    it('throws when nothing was set', () => {
+      expect(() => new MessageBuilder().buildUpdate('room_1', 'evt_1')).toThrow(ChattoValidationError)
+    })
+  })
+
+  describe('v0.5 create fields', () => {
+    it('emits createThread, linkPreviewToken, explicit idempotencyKey and descriptions', () => {
+      const key = '123e4567-e89b-12d3-a456-426614174000'
+      const input = new MessageBuilder()
+        .setContent('hi')
+        .setCreateThread()
+        .setLinkPreviewToken('cht_tok')
+        .setIdempotencyKey(key)
+        .addAttachment('as_1', 'a cat')
+        .addAttachment('as_2')
+        .buildCreate('room_1')
+      expect(input).toMatchObject({
+        createThread: true,
+        linkPreviewToken: 'cht_tok',
+        idempotencyKey: key,
+        attachmentDescriptions: [{ assetId: 'as_1', description: 'a cat' }],
+      })
+    })
+
+    it('does not generate an idempotency key itself and omits unset fields', () => {
+      const input = new MessageBuilder().setContent('hi').buildCreate('room_1')
+      expect(input.idempotencyKey).toBeUndefined()
+      expect(input.createThread).toBeUndefined()
+      expect(input.attachmentDescriptions).toBeUndefined()
+    })
+
+    it('addFile keeps a description alongside the file', () => {
+      const file = { data: new Uint8Array([1]), filename: 'a.png' }
+      const b = new MessageBuilder().addFile(file, 'alt')
+      expect(b.getPendingFiles()).toEqual([{ file, description: 'alt' }])
+      expect(b.getFiles()).toEqual([file])
+    })
+
+    it('clone copies the new fields independently', () => {
+      const original = new MessageBuilder().setContent('x').setCreateThread().addAttachment('as_1', 'd')
+      const copy = original.clone().setAttachmentDescription('as_1', 'changed')
+      expect(original.buildCreate('r').attachmentDescriptions).toEqual([{ assetId: 'as_1', description: 'd' }])
+      expect(copy.buildCreate('r')).toMatchObject({
+        createThread: true,
+        attachmentDescriptions: [{ assetId: 'as_1', description: 'changed' }],
+      })
     })
   })
 })

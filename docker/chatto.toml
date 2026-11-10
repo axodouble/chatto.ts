@@ -1,0 +1,53 @@
+# Chatto v0.5.0 config for the disposable local test server (docker/compose.yml).
+#
+# TEST-ONLY: every secret below is a fixed, publicly committed throwaway value.
+# Never reuse this file for a real deployment.
+
+[general]
+log_level = 'info'
+log_format = 'text'
+
+[webserver]
+url = 'http://localhost:4000'
+port = 4000
+cookie_signing_secret = '2cbca4dfb2c01c87f319847318b686d8ee89b9ef65fde8dcbaeebb8051777d06' # TEST-ONLY
+cookie_encryption_secret = 'c3fbde6a94695ae31e557354c361692f2a67e92f288743b8e5e45080617bab4b' # TEST-ONLY
+
+[webserver.tls]
+enabled = false
+
+# Local Unix-socket operator API, used by docker/seed.sh via
+# `chatto operator ...` inside the container to create rooms and memberships.
+[operator_api]
+enabled = true
+socket_path = '/data/operator/operator.sock'
+
+[core]
+secret_key = 'd7daad606bc34a008096b6cb55cd7be993f06f26b6a91c2e5999cf41274ffa59' # TEST-ONLY
+
+[core.assets]
+signing_secret = '4f0c4bfad0bcfad6ad0f63a686386e0f2167fc6ce075b066279db2397b4e2f30' # TEST-ONLY
+max_upload_size = '25MB'
+storage_backend = 'nats'
+
+[smtp]
+enabled = false
+
+[asset_processing]
+enabled = true
+
+[nats]
+replicas = 1
+
+# Embedded single-node NATS; JetStream data lives in the `chatto_data` volume.
+[nats.embedded]
+enabled = true
+data_dir = '/data/nats'
+auth_token = 'd8df67655bd0287a4232d6fe59e299434f7e815b9ecd85b4b3e4f05f4d381512' # TEST-ONLY
+
+[auth]
+direct_registration = true
+# Enables POST /auth/login with {login, password}; the SDK depends on it.
+direct_login = true
+# Bearer access tokens expire after 15m by default; long enough for the suite.
+# access_token_ttl = '15m'

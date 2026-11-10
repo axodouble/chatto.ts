@@ -14,6 +14,15 @@ export class UserCache {
     this.cache.set(id, promise)
     return promise
   }
+
+  /** Drop a cached entry so the next resolve fetches it again. */
+  invalidate(id: string): void {
+    this.cache.delete(id)
+  }
+
+  clear(): void {
+    this.cache.clear()
+  }
 }
 
 export class RoomCache {
@@ -28,5 +37,14 @@ export class RoomCache {
     })
     this.cache.set(id, promise)
     return promise
+  }
+
+  /** Drop a cached entry so the next resolve fetches it again. */
+  invalidate(id: string): void {
+    this.cache.delete(id)
+  }
+
+  clear(): void {
+    this.cache.clear()
   }
 }

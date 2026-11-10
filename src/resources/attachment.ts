@@ -18,6 +18,8 @@ export class Attachment {
   readonly urlExpiresAt: string | undefined
   readonly thumbnailUrl: string | undefined
   readonly videoProcessing: VideoProcessingData | undefined
+  /** Accessibility description, when set (see `message.setAttachmentDescription`). */
+  readonly description: string | undefined
 
   constructor(data: AssetData | MessageAttachmentData) {
     this.id = data.id
@@ -30,6 +32,7 @@ export class Attachment {
     this.urlExpiresAt = data.assetUrl?.expiresAt
     this.thumbnailUrl = data.thumbnailAssetUrl?.url
     this.videoProcessing = data.videoProcessing
+    this.description = 'description' in data ? data.description : undefined
   }
 
   get isImage(): boolean {

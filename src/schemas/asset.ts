@@ -53,6 +53,8 @@ export const MessageVideoProcessingSchema = z.object({
   reasonCode: z.string().optional(),
   thumbnailAssetUrl: MessageAssetUrlSchema.optional(),
   variants: z.array(MessageVideoVariantSchema).default([]),
+  /** Adaptive-streaming (HLS) metadata, when the server produced it. */
+  hls: z.object({ masterPlaylistUrl: MessageAssetUrlSchema.optional() }).optional(),
 })
 
 export const MessageAttachmentSchema = z.object({
@@ -64,6 +66,8 @@ export const MessageAttachmentSchema = z.object({
   assetUrl: MessageAssetUrlSchema.optional(),
   thumbnailAssetUrl: MessageAssetUrlSchema.optional(),
   videoProcessing: MessageVideoProcessingSchema.optional(),
+  /** Accessibility description, when the attachment has one. */
+  description: z.string().optional(),
 })
 
 export const AssetSchema = z.object({

@@ -29,3 +29,29 @@ export function serializeExpiresAt(value: Date | string | undefined): string | u
   if (value == null) return undefined
   return value instanceof Date ? value.toISOString() : value
 }
+
+const PRESENCE_STATUS_NAMES: readonly PresenceStatusName[] = [
+  'PRESENCE_STATUS_ONLINE',
+  'PRESENCE_STATUS_AWAY',
+  'PRESENCE_STATUS_DO_NOT_DISTURB',
+  'PRESENCE_STATUS_OFFLINE',
+]
+
+/**
+ * Friendly (`'online' | 'away' | 'idle' | 'dnd' | 'offline' | 'invisible'`) or
+ * raw proto (`'PRESENCE_STATUS_*'`) presence status input.
+ */
+export type PresenceStatusInput = PresenceInput | Exclude<PresenceStatusName, 'PRESENCE_STATUS_UNSPECIFIED'>
+
+/**
+ * Map a friendly or raw presence status to the proto enum name. Unlike
+ * `normalizePresence`, offline/invisible map to the real
+ * `PRESENCE_STATUS_OFFLINE` value (valid for SetPresencePreference).
+ */
+export function toPresenceStatus(input: PresenceStatusInput): Exclude<PresenceStatusName, 'PRESENCE_STATUS_UNSPECIFIED'> {
+  if ((PRESENCE_STATUS_NAMES as readonly string[]).includes(input)) {
+    return input as Exclude<PresenceStatusName, 'PRESENCE_STATUS_UNSPECIFIED'>
+  }
+  const mapped = normalizePresence(input as PresenceInput)
+  return mapped === 'OFFLINE' ? 'PRESENCE_STATUS_OFFLINE' : (mapped as Exclude<PresenceStatusName, 'PRESENCE_STATUS_UNSPECIFIED'>)
+}

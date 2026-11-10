@@ -48,3 +48,49 @@ describe('TokenStore', () => {
     expect(loginFn).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('TokenStore with refresh tokens', () => {
+  const session = (n: number) => ({ token: `tk${n}`, refreshToken: `rt${n}`, expiresIn: 900, refreshTokenExpiresIn: 7776000 })
+
+  it('canRefresh with only a refresh token', () => {
+    expect(new TokenStore('https://c', 'tk0', undefined, undefined, { refreshToken: 'rt0' }).canRefresh()).toBe(true)
+  })
+
+  it('rotates the refresh token and tracks expiry', async () => {
+    const refreshFn = mock(async () => session(1))
+    const store = new TokenStore('https://c', 'tk0', undefined, undefined, { refreshToken: 'rt0', refreshFn })
+    expect(await store.refresh()).toBe('tk1')
+    expect(refreshFn).toHaveBeenCalledWith('https://c', 'rt0')
+    expect(store.getSession()).toMatchObject({ token: 'tk1', refreshToken: 'rt1' })
+    expect(store.msUntilExpiry()).toBeGreaterThan(890_000)
+    refreshFn.mockImplementation(async () => session(2))
+    await store.refresh()
+    expect(refreshFn).toHaveBeenLastCalledWith('https://c', 'rt1')
+  })
+
+  it('prefers the refresh token over password login', async () => {
+    const loginFn = mock(async () => ({ token: 'pw' }))
+    const refreshFn = mock(async () => session(1))
+    const store = new TokenStore('https://c', 'tk0', { login: 'u', password: 'p' }, loginFn, { refreshToken: 'rt0', refreshFn })
+    await store.refresh()
+    expect(loginFn).not.toHaveBeenCalled()
+  })
+
+  it('falls back to password login when the refresh token is rejected', async () => {
+    const loginFn = mock(async () => ({ token: 'pw1', refreshToken: 'rtPw', expiresIn: 900 }))
+    const refreshFn = mock(async () => { throw new ChattoAuthError('invalid_grant', 'revoked') })
+    const store = new TokenStore('https://c', 'tk0', { login: 'u', password: 'p' }, loginFn, { refreshToken: 'rt0', refreshFn })
+    expect(await store.refresh()).toBe('pw1')
+    expect(store.getSession().refreshToken).toBe('rtPw')
+  })
+
+  it('surfaces a rejected refresh token when there is no password fallback', async () => {
+    const refreshFn = mock(async () => { throw new ChattoAuthError('invalid_grant', 'revoked') })
+    const store = new TokenStore('https://c', 'tk0', undefined, undefined, { refreshToken: 'rt0', refreshFn })
+    await expect(store.refresh()).rejects.toThrow('revoked')
+  })
+
+  it('reports unknown expiry as undefined', () => {
+    expect(new TokenStore('https://c', 'tk0').msUntilExpiry()).toBeUndefined()
+  })
+})

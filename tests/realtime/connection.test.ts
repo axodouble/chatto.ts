@@ -1,238 +1,203 @@
-import { describe, it, expect, jest } from 'bun:test'
-import { EventEmitter } from 'events'
-import protobuf from 'protobufjs'
-import { RealtimeConnection } from '../../src/realtime/connection'
+import { describe, it, expect } from 'bun:test'
+import { RealtimeConnection, classifyCloseCode, classifyRealtimeClose, type CloseReason } from '../../src/realtime/connection'
+import type { RealtimeEvent } from '../../src/realtime/generated'
+import { MockWs, decodeSubscribe, encodeServerFrame, handshake } from './helpers'
 
-function buildServerFrameBuffer(payload: object): Buffer {
-  const root = protobuf.parse(`
-    syntax = "proto3";
-    message RealtimeServerFrame {
-      oneof frame {
-        RealtimeServerHello hello = 1;
-        RealtimeSubscribed subscribed = 2;
-        RealtimeEventEnvelope event = 3;
-        RealtimeError error = 5;
-        RealtimeClose close = 6;
-      }
-    }
-    message RealtimeServerHello { uint32 heartbeat_interval_seconds = 4; }
-    message RealtimeSubscribed {}
-    message RealtimeEventEnvelope { string id = 1; Timestamp created_at = 2; string actor_id = 3; }
-    message Timestamp { int64 seconds = 1; int32 nanos = 2; }
-    message RealtimeClose { string code = 1; string message = 2; bool reconnect = 3; int32 retry_after_ms = 4; }
-    message RealtimeError { string code = 1; string message = 2; bool fatal = 3; }
-  `, { keepCase: true }).root
-  const ServerFrame = root.lookupType('RealtimeServerFrame')
-  return Buffer.from(ServerFrame.encode(ServerFrame.create(payload)).finish())
+function makeConn(ws: MockWs | (() => MockWs), opts = {}): RealtimeConnection {
+  const factory = typeof ws === 'function' ? ws : () => ws
+  return new RealtimeConnection('ws://chat.example.com/api/realtime', () => 'mytoken', factory as any, opts)
 }
 
-class MockWs extends EventEmitter {
-  readyState = 1 // OPEN
-  binaryType = 'nodebuffer'
-  sent: Buffer[] = []
-  terminated = false
-  send(data: Buffer) { this.sent.push(data) }
-  close() { this.readyState = 3 }
-  terminate() {
-    this.terminated = true
-    this.readyState = 3
-    this.emit('close', 1006, Buffer.from(''))
-  }
-}
-
-function makeConn(mockWs: MockWs): RealtimeConnection {
-  return new RealtimeConnection('ws://chat.example.com/api/realtime', () => 'mytoken', () => mockWs as any)
-}
-
-function handshake(mockWs: MockWs) {
-  setImmediate(() => {
-    mockWs.emit('open')
-    setImmediate(() => {
-      mockWs.emit('message', buildServerFrameBuffer({ hello: { heartbeat_interval_seconds: 60 } }))
-      setImmediate(() => {
-        mockWs.emit('message', buildServerFrameBuffer({ subscribed: {} }))
-      })
-    })
-  })
-}
+const tick = () => new Promise(r => setImmediate(r))
 
 describe('RealtimeConnection', () => {
-  it('sends ClientHello on open, then SubscribeEvents after ServerHello, resolves on Subscribed', async () => {
-    const mockWs = new MockWs()
-    handshake(mockWs)
-
-    const conn = makeConn(mockWs)
+  it('sends one RealtimeSubscribe on open and resolves on caught_up', async () => {
+    const ws = new MockWs()
+    handshake(ws)
+    const conn = makeConn(ws)
+    const caught: unknown[] = []
+    conn.on('caughtUp', c => caught.push(c))
     await conn.connect()
 
-    expect(mockWs.sent).toHaveLength(2)
-
-    const ClientFrameType = protobuf.parse(`
-      syntax = "proto3";
-      message RealtimeClientFrame {
-        oneof frame { RealtimeClientHello hello = 1; RealtimeSubscribeEvents subscribe_events = 2; }
-      }
-      message RealtimeClientHello { uint32 protocol_version = 1; string bearer_token = 2; }
-      message RealtimeSubscribeEvents {}
-    `, { keepCase: true }).root.lookupType('RealtimeClientFrame')
-    const helloDecoded = ClientFrameType.toObject(
-      ClientFrameType.decode(mockWs.sent[0]),
-      { keepCase: true },
-    )
-    expect((helloDecoded as any).hello?.bearer_token).toBe('mytoken')
-
+    expect(ws.sent).toHaveLength(1)
+    expect(decodeSubscribe(ws.sent[0]!)).toEqual({
+      protocolVersion: 4,
+      bearerToken: 'mytoken',
+      initialState: 'REALTIME_INITIAL_STATE_LIVE_ONLY',
+    })
+    expect(caught).toEqual([{ cursor: 'cur_0', recovery: 'REALTIME_RECOVERY_LIVE_ONLY' }])
+    expect(conn.cursor).toBe('cur_0')
     conn.disconnect()
   })
 
-  it('emits frame event for event envelopes', async () => {
-    const mockWs = new MockWs()
-    handshake(mockWs)
-
-    const conn = makeConn(mockWs)
+  it('requests a snapshot when configured and emits it', async () => {
+    const ws = new MockWs()
+    const conn = makeConn(ws, { initialState: 'REALTIME_INITIAL_STATE_SNAPSHOT' })
+    const snapshots: any[] = []
+    conn.on('snapshot', s => snapshots.push(s))
+    setImmediate(() => {
+      ws.emit('open')
+      ws.emit('message', encodeServerFrame({ snapshot: { server: { name: 'S' }, rooms: [{ room: { id: 'R1', name: 'general' } }] } }))
+      ws.emit('message', encodeServerFrame({ caughtUp: { cursor: 'c', recovery: 'REALTIME_RECOVERY_SNAPSHOT' } }))
+    })
     await conn.connect()
+    expect(decodeSubscribe(ws.sent[0]!).initialState).toBe('REALTIME_INITIAL_STATE_SNAPSHOT')
+    expect(snapshots).toHaveLength(1)
+    expect(snapshots[0].rooms[0].room.id).toBe('R1')
+    expect(snapshots[0].users).toEqual([])
+    conn.disconnect()
+  })
 
-    const frames: unknown[] = []
-    conn.on('frame', f => frames.push(f))
+  it('emits events and advances the cursor from events and heartbeats', async () => {
+    const ws = new MockWs()
+    handshake(ws)
+    const conn = makeConn(ws)
+    await conn.connect()
+    const events: RealtimeEvent[] = []
+    conn.on('event', e => events.push(e))
 
-    // Server sends timestamps as google.protobuf.Timestamp-shaped messages, not strings.
-    mockWs.emit('message', buildServerFrameBuffer({
-      event: { id: 'env_1', created_at: { seconds: 1752055200, nanos: 0 }, actor_id: 'user_1' },
+    ws.emit('message', encodeServerFrame({
+      event: { id: 'E1', createdAt: { seconds: 1752055200 }, actorId: 'U1', cursor: 'cur_1', messageRetracted: { roomId: 'R1', messageEventId: 'E0' } },
     }))
+    expect(events).toHaveLength(1)
+    expect(events[0]!.createdAt).toBe('2025-07-09T10:00:00.000Z')
+    expect(conn.cursor).toBe('cur_1')
 
-    expect(frames).toHaveLength(1)
-    expect((frames[0] as any).event.created_at).toBe('2025-07-09T10:00:00.000Z')
+    // Cursorless events do not move the cursor.
+    ws.emit('message', encodeServerFrame({ event: { id: 'E2', userTyping: { roomId: 'R1' } } }))
+    expect(conn.cursor).toBe('cur_1')
+
+    ws.emit('message', encodeServerFrame({ heartbeat: { cursor: 'cur_2' } }))
+    expect(conn.cursor).toBe('cur_2')
     conn.disconnect()
   })
 
-  it('classifies a raw 1006 close as retry', async () => {
-    const mockWs = new MockWs()
-    handshake(mockWs)
-    const conn = makeConn(mockWs)
+  it('resumes from the last cursor on the next connect', async () => {
+    const sockets: MockWs[] = []
+    const conn = makeConn(() => {
+      const ws = new MockWs()
+      sockets.push(ws)
+      handshake(ws, `cur_${sockets.length}`)
+      return ws
+    })
     await conn.connect()
-    const reasons: any[] = []
-    conn.on('close', r => reasons.push(r))
-    mockWs.emit('close', 1006, Buffer.from(''))
-    expect(reasons).toEqual([{ kind: 'retry', code: 1006, retryAfterMs: 0 }])
+    sockets[0]!.emit('close', 1006, Buffer.from(''))
+    await conn.connect()
+    expect(decodeSubscribe(sockets[1]!.sent[0]!).resumeCursor).toBe('cur_1')
+    conn.resetCursor()
+    await conn.connect()
+    expect(decodeSubscribe(sockets[2]!.sent[0]!).resumeCursor).toBeUndefined()
+    conn.disconnect()
   })
 
-  it('classifies a raw 1008 close as auth', async () => {
-    const mockWs = new MockWs()
-    handshake(mockWs)
-    const conn = makeConn(mockWs)
-    await conn.connect()
-    const reasons: any[] = []
+  it('rejects connect and reports a close frame received before caught_up', async () => {
+    const ws = new MockWs()
+    const conn = makeConn(ws)
+    const reasons: CloseReason[] = []
     conn.on('close', r => reasons.push(r))
-    mockWs.emit('close', 1008, Buffer.from('authentication required'))
-    expect(reasons[0].kind).toBe('auth')
+    setImmediate(() => {
+      ws.emit('open')
+      ws.emit('message', encodeServerFrame({
+        close: { code: 'REALTIME_CLOSE_CODE_AUTHENTICATION_REQUIRED', message: 'authentication required', reconnect: false },
+      }))
+    })
+    await expect(conn.connect()).rejects.toThrow('REALTIME_CLOSE_CODE_AUTHENTICATION_REQUIRED')
+    expect(reasons).toEqual([{
+      kind: 'auth', code: 1000, realtimeCode: 'REALTIME_CLOSE_CODE_AUTHENTICATION_REQUIRED', message: 'authentication required', retryAfterMs: 0,
+    }])
+    expect(ws.closedWith).toBe(1000)
   })
 
-  it('classifies a raw 1002 close as fatal', async () => {
-    const mockWs = new MockWs()
-    handshake(mockWs)
-    const conn = makeConn(mockWs)
+  it('drops the cursor on RESYNC_REQUIRED and passes retry-after through', async () => {
+    const ws = new MockWs()
+    handshake(ws)
+    const conn = makeConn(ws)
     await conn.connect()
-    const reasons: any[] = []
+    const reasons: CloseReason[] = []
     conn.on('close', r => reasons.push(r))
-    mockWs.emit('close', 1002, Buffer.from('protocol error'))
-    expect(reasons[0].kind).toBe('fatal')
+    ws.emit('message', encodeServerFrame({
+      close: { code: 'REALTIME_CLOSE_CODE_RESYNC_REQUIRED', reconnect: true, retryAfter: { seconds: 3 } },
+    }))
+    expect(reasons[0]).toMatchObject({ kind: 'retry', retryAfterMs: 3000 })
+    expect(conn.cursor).toBeUndefined()
+  })
+
+  it('emits close only once when the socket closes after a close frame', async () => {
+    const ws = new MockWs()
+    handshake(ws)
+    const conn = makeConn(ws)
+    await conn.connect()
+    const reasons: CloseReason[] = []
+    conn.on('close', r => reasons.push(r))
+    ws.emit('message', encodeServerFrame({ close: { code: 'REALTIME_CLOSE_CODE_SESSION_TERMINATED', reconnect: false } }))
+    ws.emit('close', 1000, Buffer.from(''))
+    expect(reasons.map(r => r.kind)).toEqual(['terminated'])
+  })
+
+  it('closes the socket without advancing the cursor on an undecodable frame', async () => {
+    const ws = new MockWs()
+    handshake(ws)
+    const conn = makeConn(ws)
+    await conn.connect()
+    const errors: Error[] = []
+    conn.on('error', e => errors.push(e))
+    ws.emit('message', Buffer.from([0xff, 0xff, 0xff]))
+    expect(errors).toHaveLength(1)
+    expect(ws.closedWith).toBe(1003)
+    expect(conn.cursor).toBe('cur_0')
+  })
+
+  it('terminates a stalled socket after the heartbeat timeout', async () => {
+    const ws = new MockWs()
+    handshake(ws)
+    const conn = makeConn(ws, { heartbeatTimeoutMs: 50 })
+    const reasons: CloseReason[] = []
+    conn.on('close', r => reasons.push(r))
+    await conn.connect()
+    await new Promise(r => setTimeout(r, 120))
+    expect(ws.terminated).toBe(true)
+    expect(reasons[0]?.kind).toBe('retry')
+  })
+
+  it('keeps a socket alive while heartbeats arrive', async () => {
+    const ws = new MockWs()
+    handshake(ws)
+    const conn = makeConn(ws, { heartbeatTimeoutMs: 60 })
+    await conn.connect()
+    for (let i = 0; i < 4; i++) {
+      await new Promise(r => setTimeout(r, 30))
+      ws.emit('message', encodeServerFrame({ heartbeat: {} }))
+    }
+    expect(ws.terminated).toBe(false)
+    conn.disconnect()
   })
 
   it('reports a user-initiated disconnect as clean', async () => {
-    const mockWs = new MockWs()
-    handshake(mockWs)
-    const conn = makeConn(mockWs)
+    const ws = new MockWs()
+    handshake(ws)
+    const conn = makeConn(ws)
     await conn.connect()
-    const reasons: any[] = []
+    const reasons: CloseReason[] = []
     conn.on('close', r => reasons.push(r))
     conn.disconnect()
-    mockWs.emit('close', 1000, Buffer.from(''))
-    expect(reasons[0].kind).toBe('clean')
+    ws.emit('close', 1000, Buffer.from(''))
+    await tick()
+    expect(reasons.map(r => r.kind)).toEqual(['clean'])
+  })
+})
+
+describe('close classification', () => {
+  it('classifies WebSocket status codes', () => {
+    expect(classifyCloseCode(1006)).toBe('retry')
+    expect(classifyCloseCode(1008)).toBe('auth')
+    expect(classifyCloseCode(1002)).toBe('fatal')
   })
 
-  it('rejects connect() when the socket closes before subscribed', async () => {
-    const mockWs = new MockWs()
-    const conn = makeConn(mockWs)
-    const p = conn.connect()
-    setImmediate(() => {
-      mockWs.emit('open')
-      setImmediate(() => {
-        mockWs.emit('message', buildServerFrameBuffer({ hello: { heartbeat_interval_seconds: 60 } }))
-        setImmediate(() => mockWs.emit('close', 1013, Buffer.from('')))
-      })
-    })
-    await expect(p).rejects.toThrow()
-  })
-
-  it('terminates a half-open socket when heartbeats go unanswered', async () => {
-    jest.useFakeTimers()
-    try {
-      const mockWs = new MockWs()
-      const conn = makeConn(mockWs)
-      const p = conn.connect()
-      // Drive the handshake synchronously (handlers are attached synchronously
-      // inside connect()'s executor).
-      mockWs.emit('open')
-      mockWs.emit('message', buildServerFrameBuffer({ hello: { heartbeat_interval_seconds: 1 } }))
-      mockWs.emit('message', buildServerFrameBuffer({ subscribed: {} }))
-      await p
-
-      const reasons: any[] = []
-      conn.on('close', r => reasons.push(r))
-
-      // First tick sends a ping and marks the socket pending. The server never
-      // answers (half-open TCP), so the second tick must detect the dead socket
-      // and terminate it, producing a retryable close so reconnect can run.
-      jest.advanceTimersByTime(2100)
-
-      expect(mockWs.terminated).toBe(true)
-      expect(reasons).toHaveLength(1)
-      expect(reasons[0].kind).toBe('retry')
-    } finally {
-      jest.useRealTimers()
-    }
-  })
-
-  it('keeps a socket alive while the server answers heartbeats', async () => {
-    jest.useFakeTimers()
-    try {
-      const mockWs = new MockWs()
-      const conn = makeConn(mockWs)
-      const p = conn.connect()
-      mockWs.emit('open')
-      mockWs.emit('message', buildServerFrameBuffer({ hello: { heartbeat_interval_seconds: 1 } }))
-      mockWs.emit('message', buildServerFrameBuffer({ subscribed: {} }))
-      await p
-
-      const reasons: any[] = []
-      conn.on('close', r => reasons.push(r))
-
-      // Server answers each heartbeat window with an event frame → liveness stays.
-      for (let i = 0; i < 5; i++) {
-        jest.advanceTimersByTime(1000)
-        mockWs.emit('message', buildServerFrameBuffer({
-          event: { id: `env_${i}`, created_at: { seconds: 1752055200, nanos: 0 }, actor_id: 'u' },
-        }))
-      }
-
-      expect(mockWs.terminated).toBe(false)
-      expect(reasons).toHaveLength(0)
-      conn.disconnect()
-    } finally {
-      jest.useRealTimers()
-    }
-  })
-
-  it('emits close only once when frame close precedes ws close', async () => {
-    const mockWs = new MockWs()
-    handshake(mockWs)
-    const conn = makeConn(mockWs)
-    await conn.connect()
-    const reasons: any[] = []
-    conn.on('close', r => reasons.push(r))
-    mockWs.emit('message', buildServerFrameBuffer({
-      close: { code: 'stream_closed', message: 'x', reconnect: true, retry_after_ms: 1000 },
-    }))
-    mockWs.emit('close', 1006, Buffer.from(''))
-    expect(reasons).toHaveLength(1)
-    expect(reasons[0]).toEqual({ kind: 'retry', code: 1000, retryAfterMs: 1000 })
+  it('classifies realtime close codes', () => {
+    expect(classifyRealtimeClose('REALTIME_CLOSE_CODE_SESSION_RENEWAL_REQUIRED', false)).toBe('auth')
+    expect(classifyRealtimeClose('REALTIME_CLOSE_CODE_UNSUPPORTED_PROTOCOL', false)).toBe('fatal')
+    expect(classifyRealtimeClose('REALTIME_CLOSE_CODE_PRIVILEGED_MODE_EXPIRED', false)).toBe('retry')
+    expect(classifyRealtimeClose('REALTIME_CLOSE_CODE_TEMPORARILY_UNAVAILABLE', true)).toBe('retry')
+    expect(classifyRealtimeClose('REALTIME_CLOSE_CODE_TEMPORARILY_UNAVAILABLE', false)).toBe('clean')
   })
 })

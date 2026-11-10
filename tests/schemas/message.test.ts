@@ -97,8 +97,8 @@ describe('MessageResponseSchema', () => {
 })
 
 describe('DeleteMessageResponseSchema', () => {
-  it('parses deleted: true', () => {
-    expect(DeleteMessageResponseSchema.parse({ deleted: true }).deleted).toBe(true)
+  it('parses the empty Chatto 0.5 response', () => {
+    expect(DeleteMessageResponseSchema.parse({})).toEqual({})
   })
 })
 
@@ -111,5 +111,43 @@ describe('AddReactionResponseSchema', () => {
 describe('RemoveReactionResponseSchema', () => {
   it('parses removed: true', () => {
     expect(RemoveReactionResponseSchema.parse({ removed: true }).removed).toBe(true)
+  })
+})
+
+describe('v0.5 MessageService response schemas', () => {
+  it('ListReactionUsersResponseSchema defaults an empty response', async () => {
+    const { ListReactionUsersResponseSchema } = await import('../../src/schemas/message')
+    expect(ListReactionUsersResponseSchema.parse({ page: {} })).toEqual({ userIds: [], page: { totalCount: 0, hasMore: false } })
+    expect(ListReactionUsersResponseSchema.parse({ userIds: ['U'], page: { totalCount: '1' } }).page?.totalCount).toBe(1)
+  })
+
+  it('FetchLinkPreviewResponseSchema parses a preview with social post and an empty response', async () => {
+    const { FetchLinkPreviewResponseSchema } = await import('../../src/schemas/message')
+    const res = FetchLinkPreviewResponseSchema.parse({
+      preview: {
+        url: 'https://bsky.app/x', embedType: 'generic',
+        socialPost: { provider: 'bluesky', author: { displayName: 'A' }, images: [{ url: 'u' }], quotedPost: { text: 'q' } },
+      },
+      previewToken: 'cht_1',
+    })
+    expect(res.preview?.socialPost?.provider).toBe('bluesky')
+    expect(res.preview?.socialPost?.author?.handle).toBe('')
+    expect(res.preview?.socialPost?.images[0]?.assetId).toBe('')
+    expect(FetchLinkPreviewResponseSchema.parse({})).toEqual({ previewToken: '' })
+  })
+
+  it('BatchGetMessages / pin / empty responses parse proto3-omitted fields', async () => {
+    const m = await import('../../src/schemas/message')
+    expect(m.BatchGetMessagesResponseSchema.parse({})).toEqual({ messages: [] })
+    expect(m.DeleteLinkPreviewResponseSchema.parse({})).toEqual({})
+    expect(m.DeletePinnedMessageResponseSchema.parse({})).toEqual({ deleted: false })
+    expect(m.CreatePinnedMessageResponseSchema.parse({ pinnedMessage: { message: validMessage } }).pinnedMessage?.message?.pinned)
+      .toBe(false)
+    expect(m.SetAttachmentDescriptionResponseSchema.parse({ message: validMessage }).message.id).toBe('evt_abc')
+  })
+
+  it('AddReactionResponseSchema parses the returned reaction', () => {
+    const res = AddReactionResponseSchema.parse({ added: true, reaction: { emoji: 'heart', count: 1, hasReacted: true } })
+    expect(res.reaction).toEqual({ emoji: 'heart', count: 1, hasReacted: true, previewUserIds: [] })
   })
 })

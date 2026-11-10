@@ -51,3 +51,28 @@ describe('User discord.js ergonomics', () => {
     expect(user.login).toBe('U_42')
   })
 })
+
+describe('User v0.5.0 fields', () => {
+  it('exposes bio, timezone, bot owner and deactivated', () => {
+    const user = new User({
+      user: {
+        id: 'B1', login: 'bot', displayName: 'Bot', deleted: false, presenceStatus: 'PRESENCE_STATUS_ONLINE',
+        bio: 'hi', timezone: 'Europe/Berlin', bot: { ownerUserId: 'U1' }, deactivated: true,
+      },
+      roles: [],
+    } as any)
+    expect(user.bio).toBe('hi')
+    expect(user.timezone).toBe('Europe/Berlin')
+    expect(user.isBot).toBe(true)
+    expect(user.botOwnerId).toBe('U1')
+    expect(user.deactivated).toBe(true)
+  })
+
+  it('humans are not bots', () => {
+    const user = User.partial('U_1')
+    expect(user.isBot).toBe(false)
+    expect(user.botOwnerId).toBeUndefined()
+    expect(user.deactivated).toBe(false)
+    expect(user.bio).toBeUndefined()
+  })
+})

@@ -1,9 +1,9 @@
 {
   "name": "chatto.ts",
-  "version": "0.4.13",
+  "version": "0.5.0",
   "description": "TypeScript SDK for Chatto",
   "author": {
-    "name": "Jasper V",
+    "name": "Jasper (Axodouble) V.",
     "email": "jasper@jas.pe",
     "url": "https://jas.pe"
   },
@@ -36,8 +36,14 @@
   "scripts": {
     "build": "tsc",
     "test": "bun test",
-    "typecheck": "tsc --noEmit",
-    "prepublishOnly": "tsc"
+    "typecheck": "tsc --noEmit && tsc -p examples",
+    "example:ping": "bun examples/ping-bot.ts",
+    "example:commands": "bun examples/command-bot/main.ts",
+    "prepublishOnly": "tsc",
+    "gen:realtime": "bun scripts/gen-realtime.ts",
+    "test:server:up": "docker compose -f docker/compose.yml up -d --wait && ./docker/seed.sh",
+    "test:server:down": "docker compose -f docker/compose.yml down -v",
+    "test:live": "bun --env-file=.env.test test tests/integration"
   },
   "dependencies": {
     "protobufjs": "^8.7.1",

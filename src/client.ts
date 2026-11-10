@@ -1,19 +1,34 @@
 import { EventEmitter } from 'events'
 import { RestClient } from './rest/client'
-import { RealtimeConnection, type CloseReason } from './realtime/connection'
-import { mapFrameToEvent } from './realtime/events'
+import { RealtimeConnection, type CloseReason, type RealtimeConnectionOptions } from './realtime/connection'
+import { mapRealtimeEvent, toTypedEvent } from './realtime/events'
+import { cacheInvalidation } from './realtime/invalidation'
+import type { RealtimeEvent } from './realtime/generated'
 import { ChattoContext } from './context'
-import { loginWithPassword } from './auth/integrated'
+import { loginWithPassword, logout as logoutSession } from './auth/integrated'
 import { TokenStore } from './auth/token-store'
+import type { ZodTypeAny, z } from 'zod'
 import type { RoomManager } from './managers/rooms'
 import type { MessageManager } from './managers/messages'
 import type { ThreadManager } from './managers/threads'
 import type { UserManager } from './managers/users'
 import type { AssetManager } from './managers/assets'
+import type { AccountManager } from './managers/account'
+import type { ViewerManager } from './managers/viewer'
+import type { PermissionManager } from './managers/permissions'
+import type { RoleManager } from './managers/roles'
+import type { ServerManager } from './managers/server'
+import type { VoiceCallManager } from './managers/voice'
+import type { PushNotificationManager } from './managers/push'
+import type { BotManager } from './managers/bots'
+import type { SearchManager } from './managers/search'
+import type { NotificationManager } from './managers/notifications'
+import type { AdminManager } from './managers/admin'
+import type { SessionTokens } from './auth/token-store'
+import { warnPasswordAuthDeprecated } from './auth/deprecation'
 import type { ChattoClientOptions, ClientEventMap, ReconnectOptions, PresenceInput, CustomStatusInput, CustomStatus } from './types'
-import type { ServerFrame } from './realtime/frames'
 import { ChattoAuthError } from './errors'
-import { normalizePresence } from './account/presence'
+import { toPresenceStatus } from './account/presence'
 
 
 export class ChattoClient extends EventEmitter<ClientEventMap> {
@@ -22,6 +37,24 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
   readonly threads: ThreadManager
   readonly users: UserManager
   readonly assets: AssetManager
+  /** The signed-in account: presence, custom status, settings, emails, password. */
+  readonly account: AccountManager
+  /** The authenticated viewer and privileged mode. */
+  readonly viewer: ViewerManager
+  readonly permissions: PermissionManager
+  readonly roles: RoleManager
+  /** Server profile, message of the day, and runtime limits. */
+  readonly server: ServerManager
+  readonly voice: VoiceCallManager
+  readonly push: PushNotificationManager
+  /** Bot accounts, API keys, and incoming/outbound webhooks. */
+  readonly bots: BotManager
+  /** Full-text message search (when enabled on the server). */
+  readonly search: SearchManager
+  /** Notification occurrences and per-scope notification policies. */
+  readonly notifications: NotificationManager
+  /** The admin API (users, permissions incl. bot grants, roles, layout, server...). Needs privileged mode. */
+  readonly admin: AdminManager
   private readonly rest: RestClient
   private readonly realtime: RealtimeConnection
   private readonly ctx: ChattoContext
@@ -30,19 +63,29 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
   private reconnectAttempt = 0
   private readonly reconnectOpts: Required<ReconnectOptions>
   private refreshTimer: ReturnType<typeof setInterval> | null = null
+  private proactiveRefreshTimer: ReturnType<typeof setTimeout> | null = null
+  private readonly baseUrl: string
   private closedByUser = false
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private presenceTimer: ReturnType<typeof setInterval> | null = null
-  private currentPresence: string | null = null
   private readonly presenceOpts: { autoRefresh: boolean; intervalMs: number }
 
   constructor(
     options: ChattoClientOptions,
-    realtimeFactory?: (wsUrl: string, getToken: () => string) => RealtimeConnection,
+    realtimeFactory?: (
+      wsUrl: string,
+      getToken: () => string,
+      options: RealtimeConnectionOptions,
+    ) => RealtimeConnection,
   ) {
     super()
+    if (options.credentials != null || options.refreshToken != null) warnPasswordAuthDeprecated()
     const wsUrl = options.baseUrl.replace(/^https?/, m => (m === 'https' ? 'wss' : 'ws')) + '/api/realtime'
-    this.store = new TokenStore(options.baseUrl, options.token, options.credentials)
+    this.baseUrl = options.baseUrl
+    this.store = new TokenStore(options.baseUrl, options.token, options.credentials, undefined, {
+      refreshToken: options.refreshToken,
+      expiresAt: options.tokenExpiresAt instanceof Date ? options.tokenExpiresAt.getTime() : options.tokenExpiresAt,
+    })
     this.reconnectOpts = {
       baseDelayMs: options.reconnect?.baseDelayMs ?? 1000,
       maxDelayMs: options.reconnect?.maxDelayMs ?? 30000,
@@ -57,43 +100,150 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
     this.rest = new RestClient(
       options.baseUrl,
       getToken,
-      this.store.canRefresh() ? async () => { await this.store.refresh() } : undefined,
+      this.store.canRefresh() ? () => this.refreshToken() : undefined,
     )
+    const realtimeOptions: RealtimeConnectionOptions = {
+      initialState: options.realtime?.initialState === 'snapshot'
+        ? 'REALTIME_INITIAL_STATE_SNAPSHOT'
+        : 'REALTIME_INITIAL_STATE_LIVE_ONLY',
+      heartbeatTimeoutMs: options.realtime?.heartbeatTimeoutMs,
+    }
     this.realtime = realtimeFactory
-      ? realtimeFactory(wsUrl, getToken)
-      : new RealtimeConnection(wsUrl, getToken)
+      ? realtimeFactory(wsUrl, getToken, realtimeOptions)
+      : new RealtimeConnection(wsUrl, getToken, undefined, realtimeOptions)
     this.ctx = new ChattoContext(this.rest)
     this.rooms = this.ctx.rooms
     this.messages = this.ctx.messages
     this.threads = this.ctx.threads
     this.users = this.ctx.users
     this.assets = this.ctx.assets
+    this.account = this.ctx.account
+    this.viewer = this.ctx.viewer
+    this.permissions = this.ctx.permissions
+    this.roles = this.ctx.roles
+    this.server = this.ctx.server
+    this.voice = this.ctx.voice
+    this.push = this.ctx.push
+    this.bots = this.ctx.bots
+    this.search = this.ctx.search
+    this.notifications = this.ctx.notifications
+    this.admin = this.ctx.admin
     this.on('error', () => {})
     this.wireRealtime()
 
     const intervalMs = options.refresh?.intervalMs
     if (intervalMs != null && intervalMs > 0 && this.store.canRefresh()) {
       this.refreshTimer = setInterval(() => {
-        this.store.refresh()
-          .then(() => this.emit('tokenRefresh'))
-          .catch(err => this.emit('error', err instanceof Error ? err : new Error(String(err))))
+        this.refreshToken().catch(err => this.emit('error', err instanceof Error ? err : new Error(String(err))))
       }, intervalMs)
     }
   }
 
-  static async login(options: { baseUrl: string; login: string; password: string }): Promise<ChattoClient> {
-    const { token } = await loginWithPassword(options.baseUrl, options.login, options.password)
+  /**
+   * Sign in with a password and return a client for the resulting session.
+   * The session is renewed with its rotating refresh token; the password is
+   * retained only as a fallback when `retainCredentials` is true (the default,
+   * for compatibility). Pass extra client options (reconnect, realtime, ...)
+   * through `options`.
+   *
+   * @deprecated Password authentication is unsupported and may stop working in
+   * any release; bot accounts cannot use it. Create a bot under Server Admin →
+   * Bots and use `new ChattoClient({ baseUrl, token: apiKey })`.
+   */
+  static async login(
+    options: { baseUrl: string; login: string; password: string; retainCredentials?: boolean } &
+      Omit<ChattoClientOptions, 'baseUrl' | 'token' | 'credentials' | 'refreshToken' | 'tokenExpiresAt'>,
+  ): Promise<ChattoClient> {
+    const { login, password, retainCredentials = true, ...rest } = options
+    const result = await loginWithPassword(options.baseUrl, login, password)
     return new ChattoClient({
-      baseUrl: options.baseUrl,
-      token,
-      credentials: { login: options.login, password: options.password },
+      ...rest,
+      token: result.token,
+      refreshToken: result.refreshToken,
+      tokenExpiresAt: result.expiresIn != null ? Date.now() + result.expiresIn * 1000 : undefined,
+      credentials: retainCredentials ? { login, password } : undefined,
     })
+  }
+
+  /**
+   * The current bearer session (token, refresh token, expiry), e.g. to persist it.
+   * @deprecated Only meaningful for password sessions, which are unsupported.
+   */
+  get session(): SessionTokens {
+    return this.store.getSession()
   }
 
   async connect(): Promise<void> {
     this.closedByUser = false
+    // Renew an access token that is about to expire before subscribing.
+    const remaining = this.store.msUntilExpiry()
+    if (remaining != null && remaining < 60_000 && this.store.canRefresh()) await this.refreshToken()
     await this.realtime.connect()
+    this.scheduleProactiveRefresh()
+    if (this.presenceOpts.autoRefresh) this.startPresenceHeartbeat()
     this.emit('ready')
+  }
+
+  /**
+   * Revoke this session on the server (access and refresh token) and disconnect.
+   * Bot API keys are not revoked by logout; manage them with the bots API.
+   *
+   * @deprecated Only applies to password sessions, which are unsupported. To end
+   * a bot's access, revoke its key with `client.bots.revokeApiKey()`.
+   */
+  async logout(): Promise<void> {
+    const session = this.store.getSession()
+    await this.disconnect()
+    await logoutSession(this.baseUrl, session.token, session.refreshToken)
+  }
+
+  /**
+   * Call any ConnectRPC method directly — an escape hatch for APIs without a
+   * typed wrapper (e.g. `chatto.admin.v1.*`). The input uses proto3 JSON
+   * (lowerCamelCase fields, int64 as strings, enums by name). Pass a Zod schema
+   * to validate and type the response; otherwise the raw JSON is returned.
+   */
+  rpc<S extends ZodTypeAny>(service: string, method: string, input: unknown, schema: S): Promise<z.output<S>>
+  rpc(service: string, method: string, input?: unknown): Promise<unknown>
+  rpc(service: string, method: string, input: unknown = {}, schema?: ZodTypeAny): Promise<unknown> {
+    return this.rest.call(service, method, input, schema)
+  }
+
+  /**
+   * Renew the access token now (refresh token first, then password fallback).
+   * @deprecated Only applies to password sessions; bot API keys never expire.
+   */
+  async refreshToken(): Promise<void> {
+    await this.store.refresh()
+    this.emit('tokenRefresh', this.store.getSession())
+    if (this.proactiveRefreshTimer != null) this.scheduleProactiveRefresh()
+  }
+
+  // Keep a connected client's access token fresh so realtime reconnects and
+  // REST calls never start with an expired token.
+  private scheduleProactiveRefresh(): void {
+    this.clearProactiveRefresh()
+    const remaining = this.store.msUntilExpiry()
+    if (remaining == null || !this.store.canRefresh() || this.closedByUser) return
+    const delay = Math.max(5_000, remaining - 60_000)
+    this.proactiveRefreshTimer = setTimeout(() => {
+      this.proactiveRefreshTimer = null
+      this.refreshToken()
+        .then(() => this.scheduleProactiveRefresh())
+        .catch(err => {
+          this.emit('error', err instanceof Error ? err : new Error(String(err)))
+          // Retry soon; the realtime/REST auth paths also refresh on demand.
+          if (!this.closedByUser) this.proactiveRefreshTimer = setTimeout(() => this.scheduleProactiveRefresh(), 30_000)
+        })
+    }, delay)
+    this.proactiveRefreshTimer.unref?.()
+  }
+
+  private clearProactiveRefresh(): void {
+    if (this.proactiveRefreshTimer != null) {
+      clearTimeout(this.proactiveRefreshTimer)
+      this.proactiveRefreshTimer = null
+    }
   }
 
   async disconnect(): Promise<void> {
@@ -107,26 +257,22 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
       clearInterval(this.refreshTimer)
       this.refreshTimer = null
     }
+    this.clearProactiveRefresh()
     this.teardownPresence()
     this.realtime.disconnect()
     this.emit('disconnect')
   }
 
+  /**
+   * Save the account's presence choice (Chatto 0.5 presence preference). It is
+   * shown on every device and survives disconnects: `'dnd'` suppresses alerts
+   * and `'offline'`/`'invisible'` make the account appear offline. While the
+   * client is connected (or after this call), a liveness heartbeat keeps an
+   * Online/Away/DND choice visible; without one it shows as offline within 60s.
+   */
   async setStatus(status: PresenceInput): Promise<PresenceInput> {
-    const normalized = normalizePresence(status)
-    if (normalized === 'OFFLINE') {
-      this.teardownPresence()
-      return status
-    }
-    this.currentPresence = normalized
-    await this.ctx.account.updatePresence(normalized, true)
-    // Re-check after the await: a disconnect() or terminal close may have torn
-    // presence down (and reset currentPresence to null) while we were waiting
-    // on the network. Starting a fresh heartbeat here would leak an interval
-    // that never gets cleared.
-    if (this.presenceOpts.autoRefresh && this.currentPresence === normalized) {
-      this.startPresenceHeartbeat()
-    }
+    await this.ctx.account.setPresencePreference(toPresenceStatus(status))
+    if (this.presenceOpts.autoRefresh && !this.closedByUser) this.startPresenceHeartbeat()
     return status
   }
 
@@ -138,74 +284,99 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
     await this.ctx.account.deleteCustomStatus()
   }
 
+  // RefreshPresence reports liveness: Chatto shows the saved choice only while
+  // a heartbeat arrived within the last 60 seconds.
   private startPresenceHeartbeat(): void {
-    this.stopPresenceHeartbeat()
-    this.presenceTimer = setInterval(() => {
-      const status = this.currentPresence
-      if (status == null) return
-      this.ctx.account.updatePresence(status, true).catch(err => {
+    if (this.presenceTimer != null) return
+    const beat = () => {
+      this.ctx.account.refreshPresence().catch(err => {
         this.emit('error', err instanceof Error ? err : new Error(String(err)))
       })
-    }, this.presenceOpts.intervalMs)
-  }
-
-  private stopPresenceHeartbeat(): void {
-    if (this.presenceTimer != null) {
-      clearInterval(this.presenceTimer)
-      this.presenceTimer = null
     }
+    beat()
+    this.presenceTimer = setInterval(beat, this.presenceOpts.intervalMs)
+    this.presenceTimer.unref?.()
   }
 
   // Called from every terminal shutdown path (user disconnect(), clean/fatal
   // close, auth close with no refreshable credentials, reconnect give-up)
   // so the heartbeat can never keep firing after the client has given up.
   private teardownPresence(): void {
-    this.stopPresenceHeartbeat()
-    this.currentPresence = null
+    if (this.presenceTimer != null) {
+      clearInterval(this.presenceTimer)
+      this.presenceTimer = null
+    }
   }
 
   private wireRealtime(): void {
-    this.realtime.on('frame', (frame: ServerFrame) => {
-      const event = mapFrameToEvent(frame)
-      if (event == null) return
-
-      const hydrate = async () => {
-        if (event.kind === 'messageCreate') {
-          const msg = await this.messages.fetch(event.roomId, event.messageEventId)
-          this.emit('messageCreate', msg)
-        } else if (event.kind === 'messageUpdate') {
-          const msg = await this.messages.fetch(event.roomId, event.messageEventId)
-          this.emit('messageUpdate', msg)
-        } else if (event.kind === 'messageDelete') {
-          this.emit('messageDelete', event.event)
-        } else if (event.kind === 'reactionAdd') {
-          this.emit('reactionAdd', event.event)
-        } else if (event.kind === 'reactionRemove') {
-          this.emit('reactionRemove', event.event)
-        }
-      }
-
-      hydrate().catch(err => {
-        this.emit('error', err instanceof Error ? err : new Error(String(err)))
-      })
-    })
-
+    this.realtime.on('event', (event: RealtimeEvent) => this.dispatchRealtimeEvent(event))
+    this.realtime.on('snapshot', snapshot => this.emit('snapshot', snapshot))
+    this.realtime.on('caughtUp', state => this.emit('caughtUp', state))
     this.realtime.on('error', (err: Error) => this.emit('error', err))
 
     this.realtime.on('close', (reason: CloseReason) => {
       if (this.closedByUser) return
       if (reason.kind === 'clean' || reason.kind === 'fatal') {
         this.teardownPresence()
+        if (reason.kind === 'fatal') {
+          this.emit('error', new Error(`realtime closed: ${reason.realtimeCode ?? reason.code}${reason.message ? ` (${reason.message})` : ''}`))
+        }
+        this.emit('disconnect')
+        return
+      }
+      if (reason.kind === 'terminated') {
+        this.teardownPresence()
+        this.emit('error', new ChattoAuthError('session_terminated', reason.message || 'The server ended this session'))
         this.emit('disconnect')
         return
       }
       if (reason.kind === 'auth' && !this.store.canRefresh()) {
         this.teardownPresence()
-        this.emit('error', new ChattoAuthError('no_credentials', 'Realtime auth failed and no credentials to refresh'))
+        this.emit('error', new ChattoAuthError('no_credentials', 'Realtime auth failed: the token is invalid or was revoked'))
         this.emit('disconnect')
         return
       }
       this.startReconnect(reason)
+    })
+  }
+
+  private dispatchRealtimeEvent(event: RealtimeEvent): void {
+    // Evict stale cache entries first so listeners that resolve users/rooms
+    // (including message hydration below) see current data.
+    const stale = cacheInvalidation(event)
+    if (stale.all) this.ctx.invalidateAll()
+    for (const id of stale.users) this.ctx.invalidateUser(id)
+    for (const id of stale.rooms) this.ctx.invalidateRoom(id)
+
+    this.emit('raw', event)
+    const typed = toTypedEvent(event)
+    if (typed != null) {
+      ;(this.emit as (name: string, ...args: unknown[]) => boolean)(typed.name, typed.payload, typed.meta)
+    }
+
+    const sdkEvent = mapRealtimeEvent(event)
+    if (sdkEvent == null) return
+    const hydrate = async () => {
+      switch (sdkEvent.kind) {
+        case 'messageCreate':
+          this.emit('messageCreate', await this.messages.fetch(sdkEvent.roomId, sdkEvent.messageEventId))
+          break
+        case 'messageUpdate':
+          this.emit('messageUpdate', await this.messages.fetch(sdkEvent.roomId, sdkEvent.messageEventId))
+          break
+        case 'messageDelete':
+          this.emit('messageDelete', sdkEvent.event)
+          break
+        case 'reactionAdd':
+          this.emit('reactionAdd', sdkEvent.event)
+          break
+        case 'reactionRemove':
+          this.emit('reactionRemove', sdkEvent.event)
+          break
+      }
+    }
+    hydrate().catch(err => {
+      this.emit('error', err instanceof Error ? err : new Error(String(err)))
     })
   }
 
@@ -248,10 +419,10 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
 
   private async doReconnect(reason: CloseReason): Promise<void> {
     if (reason.kind === 'auth' && this.store.canRefresh()) {
-      await this.store.refresh()
-      this.emit('tokenRefresh')
+      await this.refreshToken()
     }
     await this.realtime.connect()
+    this.scheduleProactiveRefresh()
     this.reconnecting = false
     this.reconnectAttempt = 0
   }

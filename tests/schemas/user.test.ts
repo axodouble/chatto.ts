@@ -5,8 +5,8 @@ import {
   GetUserResponseSchema,
   BatchGetUsersResponseSchema,
   ListUsersResponseSchema,
-  UpdatePresenceResponseSchema,
-  UpdateCustomStatusResponseSchema,
+  SetPresenceResponseSchema,
+  SetCustomStatusResponseSchema,
   DeleteCustomStatusResponseSchema,
 } from '../../src/schemas/user'
 
@@ -103,13 +103,13 @@ describe('ListUsersResponseSchema', () => {
 })
 
 describe('status response schemas', () => {
-  it('parses UpdatePresenceResponse', () => {
-    const parsed = UpdatePresenceResponseSchema.parse({ status: 'PRESENCE_STATUS_ONLINE' })
+  it('parses SetPresenceResponse', () => {
+    const parsed = SetPresenceResponseSchema.parse({ status: 'PRESENCE_STATUS_ONLINE' })
     expect(parsed.status).toBe('PRESENCE_STATUS_ONLINE')
   })
 
-  it('parses UpdateCustomStatusResponse', () => {
-    const parsed = UpdateCustomStatusResponseSchema.parse({
+  it('parses SetCustomStatusResponse', () => {
+    const parsed = SetCustomStatusResponseSchema.parse({
       status: { emoji: '🎧', text: 'listening', expiresAt: '2026-07-15T12:00:00Z' },
     })
     expect(parsed.status.emoji).toBe('🎧')
@@ -119,5 +119,16 @@ describe('status response schemas', () => {
   it('parses DeleteCustomStatusResponse with absent status', () => {
     const parsed = DeleteCustomStatusResponseSchema.parse({})
     expect(parsed.status).toBeUndefined()
+  })
+})
+
+describe('UserProfileResponseSchema', () => {
+  it('parses a bare User with v0.5.0 fields and defaults', async () => {
+    const { UserProfileResponseSchema } = await import('../../src/schemas/user')
+    const res = UserProfileResponseSchema.parse({ user: { id: 'B1', bot: {}, timezone: 'UTC' } })
+    expect(res.user.login).toBe('')
+    expect(res.user.bot).toEqual({ ownerUserId: '' })
+    expect(res.user.deactivated).toBe(false)
+    expect(res.user.timezone).toBe('UTC')
   })
 })

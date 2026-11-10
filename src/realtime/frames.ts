@@ -1,133 +1,82 @@
 import protobuf from 'protobufjs'
+import descriptor from './descriptor.json'
+import type { RealtimeInitialState, RealtimeServerFrame } from './generated'
 
-const PROTO_SCHEMA = `
-syntax = "proto3";
-package chatto.realtime.v1;
-
-message RealtimeClientFrame {
-  oneof frame {
-    RealtimeClientHello hello = 1;
-    RealtimeSubscribeEvents subscribe_events = 2;
-    RealtimePing ping = 3;
-  }
-}
-message RealtimeClientHello {
-  uint32 protocol_version = 1;
-  optional string bearer_token = 2;
-}
-message RealtimeSubscribeEvents {}
-message RealtimePing { string nonce = 1; }
-
-message RealtimeServerFrame {
-  oneof frame {
-    RealtimeServerHello hello = 1;
-    RealtimeSubscribed subscribed = 2;
-    RealtimeEventEnvelope event = 3;
-    RealtimeHeartbeat heartbeat = 4;
-    RealtimeError error = 5;
-    RealtimeClose close = 6;
-    RealtimePong pong = 7;
-  }
-}
-message RealtimeServerHello {
-  uint32 protocol_version = 1;
-  string server_version = 2;
-  uint32 heartbeat_interval_seconds = 4;
-  repeated string capabilities = 5;
-}
-message RealtimeSubscribed {}
-message RealtimeHeartbeat { string id = 1; Timestamp created_at = 2; }
-
-// The server encodes timestamps as google.protobuf.Timestamp-shaped messages
-// (seconds + nanos), not RFC 3339 strings. Model it explicitly so decoding
-// doesn't try to UTF-8-decode the wire bytes.
-message Timestamp { int64 seconds = 1; int32 nanos = 2; }
-message RealtimePong { string nonce = 1; }
-message RealtimeError { string code = 1; string message = 2; bool fatal = 3; }
-message RealtimeClose { string code = 1; string message = 2; bool reconnect = 3; int32 retry_after_ms = 4; }
-
-message RealtimeEventEnvelope {
-  string id = 1;
-  Timestamp created_at = 2;
-  string actor_id = 3;
-  oneof event {
-    RealtimeMessagePostedEvent message_posted = 10;
-    RealtimeMessageEditedEvent message_edited = 11;
-    RealtimeMessageRetractedEvent message_retracted = 12;
-    RealtimeReactionEvent reaction_added = 20;
-    RealtimeReactionEvent reaction_removed = 21;
-  }
-}
-message RealtimeMessagePostedEvent { string room_id = 1; string message_event_id = 2; string thread_root_event_id = 3; }
-message RealtimeMessageEditedEvent { string room_id = 1; string message_event_id = 2; }
-message RealtimeMessageRetractedEvent { string room_id = 1; string message_event_id = 2; string reason = 3; }
-message RealtimeReactionEvent { string room_id = 1; string message_event_id = 2; string emoji = 3; }
-`
+/** The only realtime protocol version accepted by Chatto 0.5. */
+export const REALTIME_PROTOCOL_VERSION = 4
 
 let _root: protobuf.Root | null = null
 
 function getRoot(): protobuf.Root {
-  if (_root == null) {
-    _root = protobuf.parse(PROTO_SCHEMA, { keepCase: true }).root
-  }
+  if (_root == null) _root = protobuf.Root.fromJSON(descriptor as protobuf.INamespace)
   return _root
 }
 
-export interface EventEnvelopePayload {
-  id: string
-  created_at: string
-  actor_id: string
-  message_posted?: { room_id: string; message_event_id: string; thread_root_event_id?: string }
-  message_edited?: { room_id: string; message_event_id: string }
-  message_retracted?: { room_id: string; message_event_id: string; reason?: string }
-  reaction_added?: { room_id: string; message_event_id: string; emoji: string }
-  reaction_removed?: { room_id: string; message_event_id: string; emoji: string }
+export interface SubscribeFrame {
+  bearerToken?: string
+  resumeCursor?: string
+  initialState: RealtimeInitialState
 }
 
-export interface ServerFrame {
-  hello?: { protocol_version: number; server_version: string; heartbeat_interval_seconds: number; capabilities: string[] }
-  subscribed?: Record<string, never>
-  event?: EventEnvelopePayload
-  heartbeat?: { id: string; created_at: string }
-  pong?: { nonce: string }
-  error?: { code: string; message: string; fatal: boolean }
-  close?: { code: string; message: string; reconnect: boolean; retry_after_ms: number }
+/** Encode the single `RealtimeSubscribe` message a client sends after the socket opens. */
+export function encodeSubscribe(frame: SubscribeFrame): Buffer {
+  const Subscribe = getRoot().lookupType('chatto.realtime.v1.RealtimeSubscribe')
+  const message = Subscribe.fromObject({
+    protocolVersion: REALTIME_PROTOCOL_VERSION,
+    bearerToken: frame.bearerToken,
+    resumeCursor: frame.resumeCursor,
+    initialState: frame.initialState,
+  })
+  return Buffer.from(Subscribe.encode(message).finish())
 }
 
-export type ClientFrame =
-  | { hello: { protocol_version: number; bearer_token: string } }
-  | { subscribe_events: Record<string, never> }
-  | { ping: { nonce: string } }
-
-export function encodeClientFrame(frame: ClientFrame): Buffer {
-  const ClientFrame = getRoot().lookupType('chatto.realtime.v1.RealtimeClientFrame')
-  return Buffer.from(ClientFrame.encode(ClientFrame.create(frame as object)).finish())
-}
-
-interface WireTimestamp {
-  seconds?: number
-  nanos?: number
-}
-
-function timestampToIso(ts: WireTimestamp | string | undefined): string {
-  // Already a string (defensive) or missing → pass through / empty.
-  if (ts == null) return ''
-  if (typeof ts === 'string') return ts
-  const ms = (ts.seconds ?? 0) * 1000 + Math.floor((ts.nanos ?? 0) / 1_000_000)
-  return new Date(ms).toISOString()
-}
-
-export function decodeServerFrame(buffer: Buffer): ServerFrame {
+/**
+ * Decode one server frame into the generated plain-object shape:
+ * camelCase fields, enums as their proto names, int64 as numbers,
+ * `google.protobuf.Timestamp` as ISO-8601 strings and `Duration` as
+ * milliseconds. Scalars, enums, and repeated fields carry their defaults;
+ * unset message fields, oneof members, and proto3 `optional` fields are absent.
+ */
+export function decodeServerFrame(buffer: Uint8Array): RealtimeServerFrame {
   const ServerFrame = getRoot().lookupType('chatto.realtime.v1.RealtimeServerFrame')
   const decoded = ServerFrame.decode(buffer)
-  // longs: Number so int64 `seconds` comes back as a JS number rather than a Long object.
-  const frame = ServerFrame.toObject(decoded, { keepCase: true, longs: Number } as object) as {
-    event?: { created_at?: WireTimestamp | string }
-    heartbeat?: { created_at?: WireTimestamp | string }
-  } & ServerFrame
+  const obj = ServerFrame.toObject(decoded, {
+    longs: Number,
+    enums: String,
+    defaults: true,
+    arrays: true,
+    oneofs: true,
+  })
+  return normalize(ServerFrame, obj) as unknown as RealtimeServerFrame
+}
 
-  if (frame.event != null) frame.event.created_at = timestampToIso(frame.event.created_at)
-  if (frame.heartbeat != null) frame.heartbeat.created_at = timestampToIso(frame.heartbeat.created_at)
+function normalize(type: protobuf.Type, obj: Record<string, unknown>): Record<string, unknown> {
+  for (const key of Object.keys(obj)) {
+    const value = obj[key]
+    // Synthetic oneofs of proto3 `optional` fields add `_name` virtual keys.
+    if (key.startsWith('_') || value == null) {
+      delete obj[key]
+      continue
+    }
+    const field = type.fields[key]
+    if (field == null) continue // oneof virtual field (e.g. `event: 'messagePosted'`)
+    const resolved = field.resolvedType
+    if (!(resolved instanceof protobuf.Type)) continue
+    const convert = (v: unknown) => convertMessage(resolved, v as Record<string, unknown>)
+    obj[key] = Array.isArray(value) ? value.map(convert) : convert(value)
+  }
+  return obj
+}
 
-  return frame as ServerFrame
+function convertMessage(type: protobuf.Type, value: Record<string, unknown>): unknown {
+  switch (type.fullName) {
+    case '.google.protobuf.Timestamp': {
+      const ms = Number(value['seconds'] ?? 0) * 1000 + Math.floor(Number(value['nanos'] ?? 0) / 1_000_000)
+      return new Date(ms).toISOString()
+    }
+    case '.google.protobuf.Duration':
+      return Number(value['seconds'] ?? 0) * 1000 + Math.floor(Number(value['nanos'] ?? 0) / 1_000_000)
+    default:
+      return normalize(type, value)
+  }
 }

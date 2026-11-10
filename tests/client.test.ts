@@ -93,12 +93,65 @@ describe('ChattoClient', () => {
     })
     const received: any[] = []
     client.on('messageCreate', m => received.push(m))
-    // Real frame shape per src/realtime/frames.ts + src/realtime/events.ts:
-    // ServerFrame.event.message_posted = { room_id, message_event_id }
-    mockRt.emit('frame', { event: { id: 'e_1', created_at: 't', actor_id: 'U_1', message_posted: { room_id: 'R_1', message_event_id: 'evt_1' } } })
+    // Decoded RealtimeEvent (src/realtime/frames.ts). For message_posted the
+    // envelope id is the message's event id.
+    mockRt.emit('event', { id: 'evt_1', actorId: 'U_1', event: 'messagePosted', messagePosted: { roomId: 'R_1' } })
     await new Promise(r => setTimeout(r, 10))
     expect(received[0]?.author.displayName).toBe('Name')
     expect(received[0]?.channel.name).toBe('general')
+  })
+
+  it('emits every realtime event as raw and as its typed variant with metadata', () => {
+    const mockRt = makeMockRt()
+    const client = makeClient(mockRt)
+    const raw: any[] = []
+    const typed: any[] = []
+    client.on('raw', e => raw.push(e))
+    client.on('userTyping', (payload, meta) => typed.push({ payload, meta }))
+    const event = { id: 'E1', createdAt: '2026-11-10T00:00:00.000Z', actorId: 'U1', event: 'userTyping', userTyping: { roomId: 'R1' } }
+    mockRt.emit('event', event)
+    expect(raw).toEqual([event])
+    expect(typed).toEqual([{ payload: { roomId: 'R1' }, meta: { id: 'E1', createdAt: '2026-11-10T00:00:00.000Z', actorId: 'U1', cursor: undefined } }])
+  })
+
+  it('re-fetches a cached room after a roomUpdated event', async () => {
+    const mockRt = makeMockRt()
+    const client = makeClient(mockRt)
+    let name = 'old'
+    const post = mock(async () => ({ room: { room: { id: 'R1', name } } }))
+    ;(client as any).ctx.rest.post = post
+    const ctx = (client as any).ctx
+    expect((await ctx.resolveRoom('R1')).name).toBe('old')
+    name = 'new'
+    expect((await ctx.resolveRoom('R1')).name).toBe('old')
+    mockRt.emit('event', { id: 'E1', event: 'roomUpdated', roomUpdated: { roomId: 'R1', name: 'new', description: '' } })
+    expect((await ctx.resolveRoom('R1')).name).toBe('new')
+    expect(post).toHaveBeenCalledTimes(2)
+  })
+
+  it('forwards snapshot and caughtUp from the realtime connection', () => {
+    const mockRt = makeMockRt()
+    const client = makeClient(mockRt)
+    const seen: string[] = []
+    client.on('snapshot', () => seen.push('snapshot'))
+    client.on('caughtUp', s => seen.push(s.recovery))
+    mockRt.emit('snapshot', { rooms: [], roomGroups: [], users: [], activeCalls: [] })
+    mockRt.emit('caughtUp', { cursor: 'c', recovery: 'REALTIME_RECOVERY_RESUMED' })
+    expect(seen).toEqual(['snapshot', 'REALTIME_RECOVERY_RESUMED'])
+  })
+
+  it('stops with a session_terminated auth error when the server ends the session', () => {
+    const mockRt = makeMockRt()
+    const client = makeClient(mockRt)
+    const errors: Error[] = []
+    const disconnects: unknown[] = []
+    client.on('error', e => errors.push(e))
+    client.on('disconnect', () => disconnects.push(true))
+    mockRt.emit('close', { kind: 'terminated', code: 1000, message: 'logout', retryAfterMs: 0 })
+    expect(errors[0]).toBeInstanceOf(ChattoAuthError)
+    expect((errors[0] as ChattoAuthError).code).toBe('session_terminated')
+    expect(disconnects).toHaveLength(1)
+    expect(mockRt.connect).not.toHaveBeenCalled()
   })
 
   it('does not throw when an error is emitted with no user listener', () => {
@@ -278,154 +331,148 @@ describe('ChattoClient', () => {
       return (client as any).ctx.account as AccountManager
     }
 
-    it('setStatus sends UpdatePresence with userSelected=true', async () => {
-      const client = makeClient(makeMockRt())
+    function stubPresence(client: ChattoClient) {
       const account = accountOf(client)
-      const spy = spyOn(account, 'updatePresence').mockResolvedValue('PRESENCE_STATUS_ONLINE')
-      const result = await client.setStatus('online')
-      expect(spy).toHaveBeenCalledWith('PRESENCE_STATUS_ONLINE', true)
-      expect(result).toBe('online')
+      const pref = { status: 'PRESENCE_STATUS_ONLINE' as const, revision: 'r1' }
+      const set = spyOn(account, 'setPresencePreference').mockResolvedValue(pref)
+      const refresh = spyOn(account, 'refreshPresence').mockResolvedValue(pref)
+      const legacy = spyOn(account, 'updatePresence').mockResolvedValue('PRESENCE_STATUS_ONLINE')
+      return { set, refresh, legacy }
+    }
+
+    it('setStatus saves the presence preference, not legacy SetPresence', async () => {
+      const client = makeClient(makeMockRt())
+      const { set, legacy } = stubPresence(client)
+      expect(await client.setStatus('online')).toBe('online')
+      expect(set).toHaveBeenCalledWith('PRESENCE_STATUS_ONLINE')
+      expect(legacy).not.toHaveBeenCalled()
       await client.disconnect()
     })
 
-    it('setStatus maps dnd and idle', async () => {
+    it('setStatus maps dnd, idle and offline/invisible', async () => {
       const client = makeClient(makeMockRt())
-      const account = accountOf(client)
-      const spy = spyOn(account, 'updatePresence').mockResolvedValue('PRESENCE_STATUS_DO_NOT_DISTURB')
+      const { set } = stubPresence(client)
       await client.setStatus('dnd')
-      expect(spy).toHaveBeenLastCalledWith('PRESENCE_STATUS_DO_NOT_DISTURB', true)
+      expect(set).toHaveBeenLastCalledWith('PRESENCE_STATUS_DO_NOT_DISTURB')
       await client.setStatus('idle')
-      expect(spy).toHaveBeenLastCalledWith('PRESENCE_STATUS_AWAY', true)
-      await client.disconnect()
-    })
-
-    it('setStatus("offline") sends no RPC', async () => {
-      const client = makeClient(makeMockRt())
-      const account = accountOf(client)
-      const spy = spyOn(account, 'updatePresence').mockResolvedValue('PRESENCE_STATUS_ONLINE')
-      await client.setStatus('offline')
-      expect(spy).not.toHaveBeenCalled()
+      expect(set).toHaveBeenLastCalledWith('PRESENCE_STATUS_AWAY')
+      await client.setStatus('invisible')
+      expect(set).toHaveBeenLastCalledWith('PRESENCE_STATUS_OFFLINE')
       await client.disconnect()
     })
 
     it('invalid status throws before any network call', async () => {
       const client = makeClient(makeMockRt())
-      const account = accountOf(client)
-      const spy = spyOn(account, 'updatePresence').mockResolvedValue('PRESENCE_STATUS_ONLINE')
+      const { set } = stubPresence(client)
       await expect(client.setStatus('busy' as any)).rejects.toThrow(ChattoValidationError)
-      expect(spy).not.toHaveBeenCalled()
+      expect(set).not.toHaveBeenCalled()
       await client.disconnect()
     })
 
-    it('heartbeat re-sends presence on the interval', async () => {
+    it('connect starts a RefreshPresence heartbeat on the interval', async () => {
       const client = new ChattoClient(
-        { baseUrl: 'https://chat.example.com', token: 'tk', presence: { intervalMs: 1000 } },
+        { baseUrl: 'https://chat.example.com', token: 'tk', presence: { intervalMs: 300 } },
         () => makeMockRt() as unknown as RealtimeConnection,
       )
-      const account = accountOf(client)
-      const spy = spyOn(account, 'updatePresence').mockResolvedValue('PRESENCE_STATUS_ONLINE')
+      const { refresh } = stubPresence(client)
+      await client.connect()
+      expect(refresh).toHaveBeenCalledTimes(1)
+      await Bun.sleep(350)
+      expect(refresh.mock.calls.length).toBeGreaterThanOrEqual(2)
+      await client.disconnect()
+    })
+
+    it('setStatus also starts the heartbeat, and only one runs', async () => {
+      const client = new ChattoClient(
+        { baseUrl: 'https://chat.example.com', token: 'tk', presence: { intervalMs: 10_000 } },
+        () => makeMockRt() as unknown as RealtimeConnection,
+      )
+      const { refresh } = stubPresence(client)
       await client.setStatus('online')
-      expect(spy).toHaveBeenCalledTimes(1)
-      await Bun.sleep(1100)
-      expect(spy.mock.calls.length).toBeGreaterThanOrEqual(2)
+      await client.setStatus('dnd')
+      await client.connect()
+      expect(refresh).toHaveBeenCalledTimes(1)
       await client.disconnect()
     })
 
     it('no heartbeat when autoRefresh is false', async () => {
       const client = new ChattoClient(
-        { baseUrl: 'https://chat.example.com', token: 'tk', presence: { autoRefresh: false, intervalMs: 500 } },
+        { baseUrl: 'https://chat.example.com', token: 'tk', presence: { autoRefresh: false, intervalMs: 100 } },
         () => makeMockRt() as unknown as RealtimeConnection,
       )
-      const account = accountOf(client)
-      const spy = spyOn(account, 'updatePresence').mockResolvedValue('PRESENCE_STATUS_ONLINE')
+      const { refresh, set } = stubPresence(client)
+      await client.connect()
       await client.setStatus('online')
-      await Bun.sleep(700)
-      expect(spy).toHaveBeenCalledTimes(1)
+      await Bun.sleep(250)
+      expect(set).toHaveBeenCalledTimes(1)
+      expect(refresh).not.toHaveBeenCalled()
       await client.disconnect()
     })
 
     it('disconnect stops the heartbeat', async () => {
       const client = new ChattoClient(
-        { baseUrl: 'https://chat.example.com', token: 'tk', presence: { intervalMs: 500 } },
+        { baseUrl: 'https://chat.example.com', token: 'tk', presence: { intervalMs: 100 } },
         () => makeMockRt() as unknown as RealtimeConnection,
       )
-      const account = accountOf(client)
-      const spy = spyOn(account, 'updatePresence').mockResolvedValue('PRESENCE_STATUS_ONLINE')
-      await client.setStatus('online')
+      const { refresh } = stubPresence(client)
+      await client.connect()
       await client.disconnect()
-      const callsAfterDisconnect = spy.mock.calls.length
-      await Bun.sleep(700)
-      expect(spy.mock.calls.length).toBe(callsAfterDisconnect)
+      const calls = refresh.mock.calls.length
+      await Bun.sleep(250)
+      expect(refresh.mock.calls.length).toBe(calls)
+      expect((client as any).presenceTimer).toBeNull()
     })
 
-    it('setStatus("offline") stops an active heartbeat', async () => {
-      const client = new ChattoClient(
-        { baseUrl: 'https://chat.example.com', token: 'tk', presence: { intervalMs: 500 } },
-        () => makeMockRt() as unknown as RealtimeConnection,
-      )
-      const account = accountOf(client)
-      const spy = spyOn(account, 'updatePresence').mockResolvedValue('PRESENCE_STATUS_ONLINE')
-      await client.setStatus('online')
-      await client.setStatus('offline')
-      const calls = spy.mock.calls.length
-      await Bun.sleep(700)
-      expect(spy.mock.calls.length).toBe(calls)
-      await client.disconnect()
-    })
-
-    it('stops the heartbeat on a terminal disconnect without calling disconnect()', async () => {
+    it('stops the heartbeat on a terminal close without calling disconnect()', async () => {
       const mockRt = makeMockRt()
       const client = new ChattoClient(
-        { baseUrl: 'https://chat.example.com', token: 'tk', presence: { intervalMs: 300 } },
+        { baseUrl: 'https://chat.example.com', token: 'tk', presence: { intervalMs: 100 } },
         () => mockRt as unknown as RealtimeConnection,
       )
-      const account = accountOf(client)
-      const spy = spyOn(account, 'updatePresence').mockResolvedValue('PRESENCE_STATUS_ONLINE')
-      await client.setStatus('online')
-      expect(spy).toHaveBeenCalledTimes(1)
-      // Terminal close: the realtime layer gives up without the user ever calling disconnect().
+      const { refresh } = stubPresence(client)
+      await client.connect()
       mockRt.emit('close', { kind: 'clean', code: 1000, retryAfterMs: 0 })
-      const callsAfterClose = spy.mock.calls.length
-      await Bun.sleep(400)
-      expect(spy.mock.calls.length).toBe(callsAfterClose)
+      const calls = refresh.mock.calls.length
+      await Bun.sleep(250)
+      expect(refresh.mock.calls.length).toBe(calls)
     })
 
-    it('stops the heartbeat when reconnect gives up after maxAttempts', async () => {
+    it('keeps the heartbeat across a reconnect and stops it when reconnect gives up', async () => {
       const mockRt = makeMockRt()
-      mockRt.connect = mock(() => Promise.reject(new Error('down'))) as any
       const client = new ChattoClient(
         {
           baseUrl: 'https://c',
           token: 'tk',
-          presence: { intervalMs: 300 },
+          presence: { intervalMs: 100 },
           reconnect: { baseDelayMs: 1, maxDelayMs: 2, maxAttempts: 2 },
         },
         () => mockRt as unknown as RealtimeConnection,
       )
-      const account = accountOf(client)
-      const spy = spyOn(account, 'updatePresence').mockResolvedValue('PRESENCE_STATUS_ONLINE')
-      await client.setStatus('online')
-      expect(spy).toHaveBeenCalledTimes(1)
+      const { refresh } = stubPresence(client)
+      await client.connect()
+      expect((client as any).presenceTimer).not.toBeNull()
+      mockRt.connect = mock(() => Promise.reject(new Error('down'))) as any
       mockRt.emit('close', { kind: 'retry', code: 1006, retryAfterMs: 0 })
-      // Let the reconnect attempts exhaust and the client give up.
       await new Promise(r => setTimeout(r, 30))
-      const callsAfterGiveUp = spy.mock.calls.length
-      await Bun.sleep(400)
-      expect(spy.mock.calls.length).toBe(callsAfterGiveUp)
+      const calls = refresh.mock.calls.length
+      await Bun.sleep(250)
+      expect(refresh.mock.calls.length).toBe(calls)
+      expect((client as any).presenceTimer).toBeNull()
     })
 
-    it('does not leave a dangling heartbeat timer if disconnect() races an in-flight setStatus', async () => {
+    it('does not start a heartbeat if disconnect() races an in-flight setStatus', async () => {
       const client = new ChattoClient(
         { baseUrl: 'https://chat.example.com', token: 'tk', presence: { intervalMs: 300 } },
         () => makeMockRt() as unknown as RealtimeConnection,
       )
       const account = accountOf(client)
-      let resolveUpdate!: (v: string) => void
-      spyOn(account, 'updatePresence').mockImplementation(() => new Promise(r => { resolveUpdate = r }))
-      const setStatusPromise = client.setStatus('online')
+      let resolveSet!: (v: any) => void
+      spyOn(account, 'setPresencePreference').mockImplementation(() => new Promise(r => { resolveSet = r }))
+      spyOn(account, 'refreshPresence').mockResolvedValue(undefined)
+      const pending = client.setStatus('online')
       await client.disconnect()
-      resolveUpdate('PRESENCE_STATUS_ONLINE')
-      await setStatusPromise
+      resolveSet({ status: 'PRESENCE_STATUS_ONLINE', revision: 'r' })
+      await pending
       expect((client as any).presenceTimer).toBeNull()
     })
 
@@ -450,4 +497,60 @@ describe('ChattoClient', () => {
   })
 
   afterEach(() => mock.restore())
+
+  describe('session renewal', () => {
+    afterEach(() => mock.restore())
+
+    it('login() keeps the refresh token and expiry from the login response', async () => {
+      spyOn(globalThis, 'fetch').mockImplementation(async () => ({
+        ok: true, status: 200, statusText: 'OK',
+        json: async () => ({ success: true, token: 'at', refreshToken: 'rt', expiresIn: 900, refreshTokenExpiresIn: 1000, user: { id: 'U', login: 'u' } }),
+      }) as Response)
+      const client = await ChattoClient.login({ baseUrl: 'https://c', login: 'u', password: 'p', retainCredentials: false })
+      expect(client.session.token).toBe('at')
+      expect(client.session.refreshToken).toBe('rt')
+      expect(client.session.expiresAt! - Date.now()).toBeGreaterThan(890_000)
+    })
+
+    it('refreshToken() emits tokenRefresh with the rotated session', async () => {
+      spyOn(globalThis, 'fetch').mockImplementation(async () => ({
+        ok: true, status: 200, statusText: 'OK',
+        json: async () => ({ access_token: 'at2', refresh_token: 'rt2', expires_in: 900, refresh_token_expires_in: 1000 }),
+      }) as Response)
+      const client = new ChattoClient({ baseUrl: 'https://c', token: 'at1', refreshToken: 'rt1' }, () => makeMockRt() as unknown as RealtimeConnection)
+      const sessions: any[] = []
+      client.on('tokenRefresh', s => sessions.push(s))
+      await client.refreshToken()
+      expect(sessions[0]).toMatchObject({ token: 'at2', refreshToken: 'rt2' })
+      expect(client.session.token).toBe('at2')
+    })
+
+    it('connect() renews an access token that expires within a minute', async () => {
+      const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async () => ({
+        ok: true, status: 200, statusText: 'OK',
+        json: async () => ({ access_token: 'at2', refresh_token: 'rt2', expires_in: 900, refresh_token_expires_in: 1000 }),
+      }) as Response)
+      const mockRt = makeMockRt()
+      const client = new ChattoClient(
+        { baseUrl: 'https://c', token: 'at1', refreshToken: 'rt1', tokenExpiresAt: Date.now() + 10_000, presence: { autoRefresh: false } },
+        () => mockRt as unknown as RealtimeConnection,
+      )
+      await client.connect()
+      expect(fetchSpy).toHaveBeenCalledTimes(1)
+      expect(client.session.token).toBe('at2')
+      await client.disconnect()
+    })
+
+    it('rpc() calls any service and returns raw JSON without a schema', async () => {
+      const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async () => ({
+        ok: true, status: 200, statusText: 'OK', json: async () => ({ roles: [{ name: 'admin' }] }),
+      }) as Response)
+      const client = new ChattoClient({ baseUrl: 'https://c', token: 'at' }, () => makeMockRt() as unknown as RealtimeConnection)
+      const res = await client.rpc('chatto.admin.v1.RoleService', 'ListRoles')
+      expect(res).toEqual({ roles: [{ name: 'admin' }] })
+      const [url, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit]
+      expect(url).toBe('https://c/api/connect/chatto.admin.v1.RoleService/ListRoles')
+      expect(init.body).toBe('{}')
+    })
+  })
 })

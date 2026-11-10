@@ -9,6 +9,16 @@ import { MessageManager } from './managers/messages'
 import { ThreadManager } from './managers/threads'
 import { AssetManager } from './managers/assets'
 import { AccountManager } from './managers/account'
+import { ViewerManager } from './managers/viewer'
+import { PermissionManager } from './managers/permissions'
+import { RoleManager } from './managers/roles'
+import { ServerManager } from './managers/server'
+import { VoiceCallManager } from './managers/voice'
+import { PushNotificationManager } from './managers/push'
+import { BotManager } from './managers/bots'
+import { SearchManager } from './managers/search'
+import { NotificationManager } from './managers/notifications'
+import { AdminManager } from './managers/admin'
 import { UserCache, RoomCache } from './caches'
 
 export interface ClientContext {
@@ -28,6 +38,16 @@ export class ChattoContext implements ClientContext {
   readonly threads: ThreadManager
   readonly assets: AssetManager
   readonly account: AccountManager
+  readonly viewer: ViewerManager
+  readonly permissions: PermissionManager
+  readonly roles: RoleManager
+  readonly server: ServerManager
+  readonly voice: VoiceCallManager
+  readonly push: PushNotificationManager
+  readonly bots: BotManager
+  readonly search: SearchManager
+  readonly notifications: NotificationManager
+  readonly admin: AdminManager
   private readonly userCache: UserCache
   private readonly roomCache: RoomCache
 
@@ -39,6 +59,16 @@ export class ChattoContext implements ClientContext {
     this.threads = new ThreadManager(this)
     this.assets = new AssetManager(this)
     this.account = new AccountManager(this)
+    this.viewer = new ViewerManager(this)
+    this.permissions = new PermissionManager(this)
+    this.roles = new RoleManager(this)
+    this.server = new ServerManager(this)
+    this.voice = new VoiceCallManager(this)
+    this.push = new PushNotificationManager(this)
+    this.bots = new BotManager(this)
+    this.search = new SearchManager(this)
+    this.notifications = new NotificationManager(this)
+    this.admin = new AdminManager(this)
     this.userCache = new UserCache(id => this.users.fetch(id))
     this.roomCache = new RoomCache(id => this.rooms.fetch(id))
   }
@@ -51,13 +81,28 @@ export class ChattoContext implements ClientContext {
     return this.roomCache.resolve(id)
   }
 
+  /** Forget a cached user (e.g. after a profile or presence change). */
+  invalidateUser(id: string): void {
+    this.userCache.invalidate(id)
+  }
+
+  /** Forget a cached room (e.g. after a room update or membership change). */
+  invalidateRoom(id: string): void {
+    this.roomCache.invalidate(id)
+  }
+
+  /** Forget every cached user and room (e.g. after the viewer's permissions changed). */
+  invalidateAll(): void {
+    this.userCache.clear()
+    this.roomCache.clear()
+  }
+
   /**
    * Author and channel are resolved through the client's permanent per-client
-   * caches (`userCache`/`roomCache`) and are point-in-time snapshots for the
-   * lifetime of the client: once cached, they are never re-fetched. Volatile
-   * fields on the resolved objects (e.g. `author.presenceStatus`,
-   * `author.displayName`, `channel.name`) may go stale if they change
-   * upstream. Call `client.users.fetch(id)` / `client.rooms.fetch(id)` for
+   * caches (`userCache`/`roomCache`). While the client is connected, realtime
+   * events (profile, presence, room and membership changes) evict the
+   * affected entries; without a realtime connection, entries are never
+   * re-fetched. Call `client.users.fetch(id)` / `client.rooms.fetch(id)` for
    * live, uncached data.
    */
   async hydrateMessage(data: MessageData): Promise<Message> {
