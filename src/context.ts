@@ -78,13 +78,28 @@ export class ChattoContext implements ClientContext {
     return this.roomCache.resolve(id)
   }
 
+  /** Forget a cached user (e.g. after a profile or presence change). */
+  invalidateUser(id: string): void {
+    this.userCache.invalidate(id)
+  }
+
+  /** Forget a cached room (e.g. after a room update or membership change). */
+  invalidateRoom(id: string): void {
+    this.roomCache.invalidate(id)
+  }
+
+  /** Forget every cached user and room (e.g. after the viewer's permissions changed). */
+  invalidateAll(): void {
+    this.userCache.clear()
+    this.roomCache.clear()
+  }
+
   /**
    * Author and channel are resolved through the client's permanent per-client
-   * caches (`userCache`/`roomCache`) and are point-in-time snapshots for the
-   * lifetime of the client: once cached, they are never re-fetched. Volatile
-   * fields on the resolved objects (e.g. `author.presenceStatus`,
-   * `author.displayName`, `channel.name`) may go stale if they change
-   * upstream. Call `client.users.fetch(id)` / `client.rooms.fetch(id)` for
+   * caches (`userCache`/`roomCache`). While the client is connected, realtime
+   * events (profile, presence, room and membership changes) evict the
+   * affected entries; without a realtime connection, entries are never
+   * re-fetched. Call `client.users.fetch(id)` / `client.rooms.fetch(id)` for
    * live, uncached data.
    */
   async hydrateMessage(data: MessageData): Promise<Message> {

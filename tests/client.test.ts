@@ -114,6 +114,21 @@ describe('ChattoClient', () => {
     expect(typed).toEqual([{ payload: { roomId: 'R1' }, meta: { id: 'E1', createdAt: '2026-11-10T00:00:00.000Z', actorId: 'U1', cursor: undefined } }])
   })
 
+  it('re-fetches a cached room after a roomUpdated event', async () => {
+    const mockRt = makeMockRt()
+    const client = makeClient(mockRt)
+    let name = 'old'
+    const post = mock(async () => ({ room: { room: { id: 'R1', name } } }))
+    ;(client as any).ctx.rest.post = post
+    const ctx = (client as any).ctx
+    expect((await ctx.resolveRoom('R1')).name).toBe('old')
+    name = 'new'
+    expect((await ctx.resolveRoom('R1')).name).toBe('old')
+    mockRt.emit('event', { id: 'E1', event: 'roomUpdated', roomUpdated: { roomId: 'R1', name: 'new', description: '' } })
+    expect((await ctx.resolveRoom('R1')).name).toBe('new')
+    expect(post).toHaveBeenCalledTimes(2)
+  })
+
   it('forwards snapshot and caughtUp from the realtime connection', () => {
     const mockRt = makeMockRt()
     const client = makeClient(mockRt)

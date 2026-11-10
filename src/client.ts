@@ -2,6 +2,7 @@ import { EventEmitter } from 'events'
 import { RestClient } from './rest/client'
 import { RealtimeConnection, type CloseReason, type RealtimeConnectionOptions } from './realtime/connection'
 import { mapRealtimeEvent, toTypedEvent } from './realtime/events'
+import { cacheInvalidation } from './realtime/invalidation'
 import type { RealtimeEvent } from './realtime/generated'
 import { ChattoContext } from './context'
 import { loginWithPassword, logout as logoutSession } from './auth/integrated'
@@ -321,6 +322,13 @@ export class ChattoClient extends EventEmitter<ClientEventMap> {
   }
 
   private dispatchRealtimeEvent(event: RealtimeEvent): void {
+    // Evict stale cache entries first so listeners that resolve users/rooms
+    // (including message hydration below) see current data.
+    const stale = cacheInvalidation(event)
+    if (stale.all) this.ctx.invalidateAll()
+    for (const id of stale.users) this.ctx.invalidateUser(id)
+    for (const id of stale.rooms) this.ctx.invalidateRoom(id)
+
     this.emit('raw', event)
     const typed = toTypedEvent(event)
     if (typed != null) {
